@@ -19,6 +19,12 @@ extends Node
 ## A drone another mod adds (the drones mod's zm_vehicle(id)) can bring its own
 ## craft_name, and battery cells, mAh and chemistry for the display-only pack.
 ##
+## Props: with prop_damage, a prop hit shows in the warnings for a couple of
+## seconds ("PROP FR 23%", "PROP FR LOST" blinking), and show_props keeps each
+## prop's wear on screen. prop_damage's own line in the game's message box is
+## left to this while it shows them. Its quad (its display="auto") is drawn
+## here, in the OSD's own look, and its colour one over the game steps aside.
+##
 ## Battery warnings and the post-flight stats screen follow Betaflight's own
 ## code (sensors/battery.c, osd/osd_warnings.c, osd/osd.c): the voltage shown
 ## and warned on is smoothed the same way, LOW BATTERY and LAND NOW come from
@@ -205,6 +211,8 @@ const DEFAULTS := {
 	"show_altitude_scale": false,
 	"show_speed_scale": false,
 	"show_warnings": true,
+	"show_prop_damage": true,
+	"show_props": false,
 	"show_fuel_gauge": false,
 	"warnings_use_fuel_gauge": false,
 	"show_flip_arrow": false,
@@ -213,6 +221,8 @@ const DEFAULTS := {
 	"rc_link": "elrs",
 	"rc_power": 100,
 	"hide_game_messages": true,
+	"hide_game_race_info": false,
+	"hide_game_other_messages": false,
 	"stats": true,
 	"stats_on_respawn": false,
 	"stat_cell_voltage": true,
@@ -375,7 +385,12 @@ var _scene: Node = null
 var _pp: CanvasItem = null
 var _player: Node = null
 var _overlay: ColorRect = null
-var _game_box: CanvasItem = null
+var _game_box: CanvasItem = null       # the game's grey message box (its released versions)
+var _game_text: Control = null         # and the text in it
+var _game_osd: CanvasItem = null       # its newer OSD (the 2026 beta)
+var _game_osd_ok := false              # ... with GAME_OSD_SRC on it
+var _msg_hide := false
+var _msg_last: Node = null             # runs after the game each frame (_filter_box)
 var _game_sticks: CanvasItem = null
 var _game_left: Control = null
 var _span := 55.0
@@ -387,6 +402,17 @@ var _now := 0.0
 
 var _armed := false
 var _armed_msg_until := -1.0
+# prop_damage
+const PROP_MSG_S := 2.5
+var _pd: Node = null
+var _pd_look := 0
+var _pd_serial := -1
+var _pd_msg := ""
+var _pd_until := -1.0
+var _pd_blink := false
+var _pd_hit_at := [-100.0, -100.0, -100.0, -100.0]   # when each prop was last hit (_now)
+var _pdq := {}                      # prop_damage's quad to draw this time, or {}
+var _pic_ar := 4.0 / 3.0            # the picture's width over its height, on screen
 var _fly_time := 0.0
 var _on_time := 0.0
 var _home := Vector3.ZERO
@@ -941,6 +967,9 @@ func _attach() -> void:
 	_pp = null
 	_player = null
 	_game_box = null
+	_game_text = null
+	_game_osd = null
+	_game_osd_ok = false
 	_game_sticks = null
 	_game_left = null
 	if _scene == null:
@@ -1000,13 +1029,7 @@ func _sync_overlay() -> void:
 				else:
 					_fe_crop = float(v)
 	_overlay.visible = analog or bool(cfg["show_in_digital"])
-	# The game's grey message box (DISARMED, "Press R to reset..."). The game
-	# sets its visibility every frame, so it is faded out instead; it comes
-	# back whenever this OSD is not showing.
-	if _game_box == null or not is_instance_valid(_game_box):
-		_game_box = _scene.get_node_or_null("%OSDContainer") as CanvasItem
-	if _game_box != null:
-		_game_box.modulate.a = 0.0 if bool(cfg["hide_game_messages"]) and _overlay.visible else 1.0
+	_game_messages(_overlay.visible and (bool(cfg["hide_game_messages"]) or bool(cfg["hide_game_race_info"]) or bool(cfg["hide_game_other_messages"])))
 	# the game's own stick overlay, while this one stands in for it
 	if _game_sticks == null or not is_instance_valid(_game_sticks):
 		_game_sticks = _scene.get_node_or_null("%StickOverlayContainer") as CanvasItem
@@ -1029,6 +1052,7 @@ func _sync_overlay() -> void:
 	var w := minf(ws.y * ar, ws.x)
 	var x0 := (ws.x - w) * 0.5 / maxf(ws.x, 1.0)
 	_pic = Vector4(x0, 0.0, 1.0 - x0, 1.0)
+	_pic_ar = w / maxf(ws.y, 1.0)
 	om.set_shader_parameter("pic", _pic)
 	_sync_xlayer(ws)
 
@@ -1164,6 +1188,16 @@ func _throttle() -> float:
 		return 0.0
 	var t = _player.get("throttle_input")
 	return clampf(float(t), 0.0, 1.0) if t != null else 0.0
+
+
+# The throttle as shown: with mode_3d, as Betaflight's OSD shows it in 3D
+# mode - below zero for reversed
+func _throttle_shown() -> float:
+	if _player != null and is_instance_valid(_player) and _player.has_meta("zm3"):
+		var z = _player.get_meta("zm3")
+		if z is Dictionary and z.has("osd"):
+			return clampf(float(z["osd"]), -1.0, 1.0)
+	return _throttle()
 
 
 func _pitch_stick() -> float:
@@ -1797,6 +1831,7 @@ func _compose() -> void:
 		_up_down()
 	if bool(cfg["show_flip_arrow"]):
 		_flip_arrow()
+	_props_state()
 	warning = ""
 	if cfg["show_warnings"]:
 		# in Betaflight's order of priority
@@ -1820,6 +1855,9 @@ func _compose() -> void:
 		elif bat_state == BAT_CRITICAL:
 			w = "LAND NOW"
 			blinking = true
+		elif _pd_msg != "" and _now < _pd_until:
+			w = _pd_msg
+			blinking = _pd_blink
 		elif _low_battery():
 			w = "LOW BATTERY"
 			blinking = true
@@ -1833,9 +1871,11 @@ func _compose() -> void:
 		warning = w
 		if w != "" and (blink or not blinking):
 			_center(9, w)
+	if bool(cfg["show_props"]):
+		_props_grid()
 	if cfg["show_throttle"]:
 		_sym(1, 11, SYM_THR)
-		_text(2, 11, "%3d" % int(round(_throttle() * 100.0)))
+		_text(2, 11, "%3d" % int(round(_throttle_shown() * 100.0)))
 	if bool(cfg["show_fuel_gauge"]) and _qs_ready:
 		# QUICKSILVER's OSD_FUELGAUGE_VOLTS: four wide, one decimal, then its gauge
 		var fv := fuel_gauge if str(cfg["battery_voltage"]) == "cell" else fuel_gauge * float(_shown_cells)
@@ -1861,6 +1901,90 @@ func _compose() -> void:
 		_text(23, 11, "%5.1f" % clampf(_amps, 0.0, 999.9))
 		_sym(28, 11, SYM_AMP)
 	_draw_cells(true)
+
+
+# prop_damage's Props node (looked for again now and then), and what it
+# says: a new hit becomes the warning for PROP_MSG_S, a prop lost blinking;
+# and it is told this OSD is showing them, so its line in the game's box
+# (hidden under the OSD) is left alone. Its quad too (_props_quad).
+func _props_state() -> void:
+	_pdq = {}
+	quad_info = {}
+	if _pd == null or not is_instance_valid(_pd):
+		_pd = null
+		_pd_look -= 1
+		if _pd_look <= 0:
+			_pd_look = 30
+			_pd = get_node_or_null("/root/ZoneMods/prop_damage/Props")
+		if _pd == null:
+			return
+	var serial := int(_pd.get("hit_serial"))
+	if _pd_serial < 0:
+		_pd_serial = serial          # hits from before this OSD came up
+	var h = null
+	if serial != _pd_serial:
+		_pd_serial = serial
+		h = _pd.get("last_hit")
+		if h is Dictionary and h.has("prop"):
+			_pd_hit_at[clampi(int(h["prop"]), 0, 3)] = _now
+	_props_quad_state()
+	if not (bool(cfg["show_warnings"]) and bool(cfg["show_prop_damage"])):
+		_pd_msg = ""
+		return
+	if _overlay != null and _overlay.visible:
+		_pd.set("osd_taken_ms", Time.get_ticks_msec())
+	if h is Dictionary and not h.is_empty():
+		_pd_blink = bool(h.get("broken", false))
+		_pd_msg = ("PROP %s LOST" % str(h["short"])) if _pd_blink else ("PROP %s %d%%" % [str(h["short"]), mini(int(round(float(h["wear"]) * 100.0)), 99)])
+		_pd_until = _now + PROP_MSG_S
+
+
+# prop_damage's quad, when its display="auto" asks an OSD for it
+# (osd_display()): this OSD has it while it shows - prop_damage is told, and
+# its colour one over the game steps aside - and draws it once a prop is
+# damaged (or always, as it says)
+func _props_quad_state() -> void:
+	if not _pd.has_method("osd_display") or _overlay == null or not _overlay.visible:
+		return
+	var d = _pd.call("osd_display")
+	if not (d is Dictionary) or d.is_empty():
+		return
+	_pd.set("osd_drawn_ms", Time.get_ticks_msec())
+	var w = _pd.get("wear")
+	var b = _pd.get("broken")
+	var spots = d.get("props")
+	if not (bool(d.get("flying", false)) and w is Array and b is Array and spots is Array \
+			and w.size() == 4 and b.size() == 4 and spots.size() == 4):
+		return
+	var any := false
+	for i in 4:
+		any = any or bool(b[i]) or float(w[i]) >= 0.005
+	if bool(d.get("only_damaged", true)) and not any:
+		return
+	_pdq = d.duplicate()
+	_pdq["wear"] = w.duplicate()
+	_pdq["broken"] = b.duplicate()
+
+
+# show_props: each prop's wear (%) in a square as the props sit, front ones
+# on top - "--" for one lost - at the left above the throttle; only once a
+# prop is damaged
+func _props_grid() -> void:
+	if _pd == null or not is_instance_valid(_pd):
+		return
+	var w = _pd.get("wear")
+	var b = _pd.get("broken")
+	if not (w is Array and b is Array and w.size() == 4 and b.size() == 4):
+		return
+	var any := false
+	for i in 4:
+		any = any or bool(b[i]) or float(w[i]) >= 0.005
+	if not any:
+		return
+	var cell := func(i: int) -> String:
+		return "--" if bool(b[i]) else "%2d" % mini(int(round(float(w[i]) * 100.0)), 99)
+	_text(1, 9, "%s %s" % [cell.call(0), cell.call(1)])
+	_text(1, 10, "%s %s" % [cell.call(2), cell.call(3)])
 
 
 # QUICKSILVER's osd_write_float: right-aligned in width, the decimals cut to
@@ -2686,6 +2810,175 @@ func _gtext(t: String, x: int, y: int, xs: int, va: int, ha: int, font: Image, w
 		xx += w + xs
 
 
+# prop_damage's quad in the OSD's own look - white, outlined in black, as
+# BrainFPV draws its parts - seen from above, front at the top, its props
+# where they sit on the quad (a whoop's in their ducts: thicker rings). Each
+# prop is a ring that fills in white as it wears, clockwise from the top like a clock: a
+# quarter filled is 25% worn, filled right in is worn through. One broken
+# off is an X where it was. A prop just hit blinks, as Betaflight blinks a
+# warning, while its warning shows. Where, how big and how solid:
+# prop_damage's display_x, display_y, display_size and display_opacity.
+var quad_info := {}                 # where it was drawn last, for tests
+var _qm := PackedByteArray()        # its mask: 1 white, 2 black
+var _qw := 0
+var _qh := 0
+var _qx0 := 0
+var _qy0 := 0
+
+
+func _props_quad() -> void:
+	var gw := COLS * GW
+	var gh := ROWS * GH
+	var pa := _pic_ar * float(gh) / float(gw)    # an OSD pixel's width over its height, on screen
+	var s := float(gh) * 0.1 * clampf(float(_pdq.get("size", 1.0)), 0.3, 4.0)   # half its height
+	var lw := maxi(1, roundi(s / 24.0))
+	var spots: Array = _pdq["props"]
+	var r := float(_pdq.get("r", 0.06))
+	var ducted := bool(_pdq.get("ducted", false))
+	var wear: Array = _pdq["wear"]
+	var broken: Array = _pdq["broken"]
+	var ext := 0.0
+	for p in spots:
+		ext = maxf(ext, maxf(absf(p.x), absf(p.y)) + r * (1.25 if ducted else 1.0))
+	var k := s / maxf(ext, 0.001)
+	# the props from its middle, in OSD pixels' heights (x is squeezed by pa
+	# when drawn, so it keeps its shape on the picture)
+	var pts := []
+	for p in spots:
+		pts.append(Vector2(p.x, p.y) * k)
+	var dmin := INF
+	for i in 4:
+		for j in range(i + 1, 4):
+			dmin = minf(dmin, (pts[i] as Vector2).distance_to(pts[j]))
+	# a prop's ring: its own size, but never touching the next (on a
+	# stretched 5" they nearly do for real); a duct makes the ring thicker
+	var duct := float(lw) if ducted else 0.0
+	var pr := floorf(maxf(minf(r * k, 0.5 * dmin - duct - 0.5 * lw - 1.5), 2.0 + lw))
+	var reach := pr + duct + 0.5 * lw
+	var hw := s / pa
+	var margin := int(ceil(duct)) + lw + 3
+	var cx := clampf(float(_pdq.get("x", 0.9)) * gw, hw + margin, gw - 1 - hw - margin)
+	var cy := clampf(float(_pdq.get("y", 0.6)) * gh, s + margin, gh - 1 - s - margin)
+	_qx0 = int(floor(cx - hw)) - margin
+	_qy0 = int(floor(cy - s)) - margin
+	_qw = int(ceil(2.0 * hw)) + 2 * margin + 1
+	_qh = int(ceil(2.0 * s)) + 2 * margin + 1
+	_qm.resize(_qw * _qh)
+	_qm.fill(0)
+	# the middles on pixels' middles, so the rings come out even
+	cx = floorf(cx) + 0.5
+	cy = floorf(cy) + 0.5
+	var c := Vector2(cx, cy)
+	var at := []                  # each prop's middle, in pixels
+	for p in pts:
+		at.append((c + Vector2(p.x / pa, p.y)).floor() + Vector2(0.5, 0.5))
+	var on := fmod(_now, 0.5) < 0.25
+	# the arms, from the middle out to each prop's ring
+	for i in 4:
+		_qline(c, at[i], lw, at[i], pr + duct, pa)
+	# the body, pointed at the front
+	var inner := INF
+	for p in pts:
+		inner = minf(inner, absf(p.x))
+	var bwd := clampf(inner - reach - 2.0, 0.06 * s, 0.16 * s) / pa
+	var bht := 0.3 * s
+	var body := PackedVector2Array([c + Vector2(-bwd, bht), c + Vector2(bwd, bht), c + Vector2(bwd, -bht),
+		c + Vector2(0.0, -bht - 1.6 * bwd * pa), c + Vector2(-bwd, -bht)])
+	for y in range(int(floor(cy - bht - 1.6 * bwd * pa)) - 1, int(ceil(cy + bht)) + 2):
+		for x in range(int(floor(cx - bwd)) - 1, int(ceil(cx + bwd)) + 2):
+			if Geometry2D.is_point_in_polygon(Vector2(x + 0.5, y + 0.5), body):
+				_qset(x, y, 1)
+	# the props
+	var half := 0.5 * lw
+	var lits := []
+	for i in 4:
+		var m: Vector2 = at[i]
+		var gone := bool(broken[i])
+		var fill := clampf(float(wear[i]), 0.0, 1.0) * TAU
+		var lit := on or _now - float(_pd_hit_at[i]) >= PROP_MSG_S
+		lits.append(lit)
+		var big := reach + 1.0
+		for y in range(int(floor(m.y - big)), int(ceil(m.y + big)) + 1):
+			for x in range(int(floor(m.x - big / pa)), int(ceil(m.x + big / pa)) + 1):
+				var u := (x + 0.5 - m.x) * pa
+				var v := y + 0.5 - m.y
+				var d := sqrt(u * u + v * v)
+				if not lit or gone:
+					continue
+				var ang := fposmod(atan2(u, -v), TAU)    # clockwise from the top
+				if (d - pr >= -half and d - pr < half + duct) or d <= 0.6 + 0.5 * lw or (d < pr - half - 1.0 and ang < fill):
+					_qset(x, y, 1)
+		if gone and lit:
+			var e := Vector2(0.7 * pr / pa, 0.7 * pr)
+			_qline(m - e, m + e, lw, m, -1.0, pa)
+			_qline(m + Vector2(-e.x, e.y), m + Vector2(e.x, -e.y), lw, m, -1.0, pa)
+	# black round everything white
+	for y in _qh:
+		for x in _qw:
+			var n := y * _qw + x
+			if _qm[n] != 0:
+				continue
+			if (x > 0 and _qm[n - 1] == 1) or (x < _qw - 1 and _qm[n + 1] == 1) \
+					or (y > 0 and _qm[n - _qw] == 1) or (y < _qh - 1 and _qm[n + _qw] == 1):
+				_qm[n] = 2
+	var a := clampf(float(_pdq.get("opacity", 1.0)), 0.0, 1.0)
+	if a <= 0.0:
+		return
+	var cw := Color(C_WHITE, a)
+	var cb := Color(C_BLACK, a)
+	for y in _qh:
+		var py := _qy0 + y
+		if py < 0 or py > GR_BOTTOM:
+			continue
+		for x in _qw:
+			var q := _qm[y * _qw + x]
+			var px := _qx0 + x
+			if q == 0 or px < 0 or px > GR_RIGHT:
+				continue
+			var col := cw if q == 1 else cb
+			_img.set_pixel(px, py, col if a >= 1.0 else _img.get_pixel(px, py).blend(col))
+	extras.append(["props_quad", 0, roundi(cx), roundi(cy)])
+	quad_info = {"c": [cx, cy], "at": at.map(func(v): return [v.x, v.y]), "pr": pr, "pa": pa, "lit": lits}
+
+
+func _qset(x: int, y: int, v: int) -> void:
+	x -= _qx0
+	y -= _qy0
+	if x >= 0 and y >= 0 and x < _qw and y < _qh:
+		_qm[y * _qw + x] = v
+
+
+# a line lw wide into the mask, Bresenham; none of it within keep_out
+# (OSD pixels' heights) of hole
+func _qline(a: Vector2, b: Vector2, lw: int, hole: Vector2, keep_out: float, pa: float) -> void:
+	var x0 := roundi(a.x)
+	var y0 := roundi(a.y)
+	var x1 := roundi(b.x)
+	var y1 := roundi(b.y)
+	var dx := absi(x1 - x0)
+	var dy := -absi(y1 - y0)
+	var sx := 1 if x0 < x1 else -1
+	var sy := 1 if y0 < y1 else -1
+	var err := dx + dy
+	var o := (lw - 1) / 2
+	while true:
+		var u := (x0 + 0.5 - hole.x) * pa
+		var v := y0 + 0.5 - hole.y
+		if keep_out < 0.0 or u * u + v * v >= keep_out * keep_out:
+			for j in lw:
+				for i in lw:
+					_qset(x0 - o + i, y0 - o + j, 1)
+		if x0 == x1 and y0 == y1:
+			break
+		var e2 := 2 * err
+		if e2 >= dy:
+			err += dy
+			x0 += sx
+		if e2 <= dx:
+			err += dx
+			y0 += sy
+
+
 # draw_stick, one for each stick at the bottom corners, sized so a box is no
 # bigger than the game's own stick overlay at sticks_size 1 (BrainFPV's own
 # are 43 pixels across, about half as big again at 1080p).
@@ -2697,8 +2990,33 @@ func _bfpv_sticks() -> void:
 	var half := clampi(roundi((target - 3.0) / 2.0), 6, 40)
 	var x := roundi(clampf(float(cfg["sticks_x"]), 0.0, 50.0) / 100.0 * COLS * GW)
 	var y := GR_BOTTOM - roundi(clampf(float(cfg["sticks_y"]), 0.0, 100.0) / 100.0 * ROWS * GH)
+	y = mini(y, _sticks_clear_y(x, half))
 	_bfpv_stick(x, y, half, st[mode[1]], st[mode[0]])
 	_bfpv_stick(GR_RIGHT - x, y, half, st[mode[3]], st[mode[2]])
+
+
+# The lowest the sticks' middles (OSD pixels down) may sit and stay clear of
+# what is shown under them on the row above the battery: the throttle
+# (columns 1-5, room for mode_3d's "-100"), the fuel gauge (6-10) and the
+# current (23-28). A stick x pixels in from its side reaches half + 2
+# pixels round its middle (its square, at the end of an arm, included). Both
+# go up together, so they stay level; nothing shown there, no limit.
+func _sticks_clear_y(x: int, half: int) -> int:
+	var spans := []
+	if bool(cfg["show_throttle"]):
+		spans.append(Vector2i(1, 5))
+	if bool(cfg["show_fuel_gauge"]):
+		spans.append(Vector2i(6, 10))
+	if bool(cfg["show_current"]):
+		spans.append(Vector2i(23, 28))
+	var reach := half + 2
+	for sp in spans:
+		var a: int = sp.x * GW
+		var b: int = (sp.y + 1) * GW - 1
+		for cx in [x, GR_RIGHT - x]:
+			if cx + reach >= a and cx - reach <= b:
+				return 11 * GH - reach - 2
+	return GR_BOTTOM
 
 
 func _bfpv_stick(x: int, y: int, ln: int, horizontal: float, vertical: float) -> void:
@@ -3026,11 +3344,164 @@ func _draw_cells(with_over: bool) -> void:
 		_bfpv_scales()
 		if bool(cfg["show_sticks"]) and _sticks_style == "brainfpv":
 			_bfpv_sticks()
+		if not _pdq.is_empty():
+			_props_quad()
 	_tex.update(_img)
 	# for tests: the OSD as drawn, before the video effect
 	var dump := OS.get_environment("FPV_OSD_DUMP")
 	if dump != "":
 		_img.save_png(dump)
+
+
+# The game's own messages, while this OSD shows, in three lots, each kept
+# out of the game's display by its own setting: those this OSD shows itself
+# - DISARMED and the arming warning, turtle mode, prop_damage's line - with
+# the respawn hint (hide_game_messages, on); the race's - its timer, laps,
+# track, times and medals (hide_game_race_info, off); and the rest - the
+# camera angle, the head tracker, the rate readout and anything the game
+# adds (hide_game_other_messages, off). The game's grey message box (its
+# released versions) is redrawn without them just after the game has drawn
+# it (_filter_box); its newer OSD (the 2026 beta) gets a script on its own
+# that leaves them out, and its speed with the first lot (this OSD has its
+# own). Either way, all of it comes back when this OSD is not showing.
+const GAME_MSG_MINE := ["armed", "arm_warning", "respawn_hint", "turtle_mode", "prop_damage"]
+const GAME_MSG_RACE := ["race_timer", "lap_counter", "track_description", "arm_hint", "disarm_hint", "race_completed",
+	"pb_diff", "medal_unlocked", "last_track_completed"]
+const GAME_OSD_SRC := """extends "%s"
+# fpv_osd: the game's own OSD, leaving out the messages fpv_osd's settings say
+var zm_filter := Callable()
+var zm_hide_speed := false
+
+
+func _draw_osd_values() -> void:
+	if not zm_filter.is_valid():
+		super()
+		return
+	var all = ZGamestate.OSD_VALUES
+	var left := {}
+	for k in all:
+		if not zm_filter.call(k):
+			left[k] = all[k]
+	ZGamestate.OSD_VALUES = left
+	super()
+	ZGamestate.OSD_VALUES = all
+
+
+func _draw_flight_elements(player) -> void:
+	if not zm_hide_speed:
+		super(player)
+"""
+
+
+class _AfterGame extends Node:
+	var osd = null
+	func _process(_delta: float) -> void:
+		if osd != null and is_instance_valid(osd):
+			osd._filter_box()
+
+
+func _game_messages(hide: bool) -> void:
+	_msg_hide = hide
+	if _game_box == null or not is_instance_valid(_game_box):
+		_game_box = _scene.get_node_or_null("%OSDContainer") as CanvasItem
+		_game_text = _scene.get_node_or_null("%OSDText") as Control
+	if _game_box != null:
+		if _game_text == null or not is_instance_valid(_game_text):
+			# not as this knows it: all of it, as before
+			_game_box.modulate.a = 0.0 if hide else 1.0
+			return
+		if _msg_last == null or not is_instance_valid(_msg_last):
+			_msg_last = _AfterGame.new()
+			_msg_last.name = "AfterGame"
+			_msg_last.osd = self
+			_msg_last.process_priority = 1000
+			add_child(_msg_last)
+		return
+	if _game_osd == null or not is_instance_valid(_game_osd):
+		_game_osd = _scene.get_node_or_null("%OSD") as CanvasItem
+		_game_osd_ok = _game_osd != null and _wrap_game_osd(_game_osd)
+	if _game_osd == null:
+		return
+	if _game_osd_ok:
+		_game_osd.set("zm_filter", Callable(self, "_msg_hidden") if hide else Callable())
+		_game_osd.set("zm_hide_speed", hide and bool(cfg["hide_game_messages"]))
+	else:
+		# its OSD not as this knows it: all of it
+		_game_osd.modulate.a = 0.0 if hide else 1.0
+
+
+# Whether the game's message under this key is kept out of its display
+func _msg_hidden(key) -> bool:
+	var k := str(key)
+	if k in GAME_MSG_MINE:
+		return bool(cfg["hide_game_messages"])
+	if k in GAME_MSG_RACE:
+		return bool(cfg["hide_game_race_info"])
+	return bool(cfg["hide_game_other_messages"])
+
+
+# The game's grey message box without the messages kept out of it: its text
+# again without them, sized and placed as the game places it (round its
+# text, in the middle, 70% of the way down), or hidden with nothing left
+func _filter_box() -> void:
+	if not _msg_hide or _game_box == null or not is_instance_valid(_game_box) or _game_text == null or not is_instance_valid(_game_text):
+		return
+	var gs := get_node_or_null("/root/ZGamestate")
+	var vals = gs.get("OSD_VALUES") if gs != null else null
+	if not (vals is Dictionary):
+		return
+	var out := PackedStringArray()
+	var dropped := false
+	for k in vals:
+		var v = vals[k]
+		if not v:
+			continue
+		if _msg_hidden(k):
+			dropped = true
+		else:
+			out.append(str(v))
+	if not dropped:
+		return
+	_game_box.visible = not out.is_empty()
+	if out.is_empty():
+		return
+	_game_text.set("text", "\n".join(out))
+	_game_text.reset_size()
+	var bx := _game_box as Control
+	if bx == null:
+		return
+	bx.size = _game_text.size + Vector2(12.0, 12.0)
+	var pn := bx.get_node_or_null("Panel") as Control
+	if pn != null:
+		pn.size = bx.size
+		pn.position = Vector2.ZERO
+	var ws := bx.get_viewport().get_visible_rect().size
+	bx.position = Vector2(roundi(ws.x / 2.0 - bx.size.x / 2.0), roundi(ws.y * 0.7))
+
+
+# The game's newer OSD with GAME_OSD_SRC on it, built on its own script; the
+# one thing the game sets on it (bottom_overlay) set again. False when its
+# script is not as this expects - then it is left as it is
+func _wrap_game_osd(n: Node) -> bool:
+	if n.get("zm_filter") != null:
+		return true
+	var base = n.get_script()
+	if not (base is Script) or str(base.resource_path) == "":
+		return false
+	var have := {}
+	for m in base.get_script_method_list():
+		have[m["name"]] = (m["args"] as Array).size()
+	if have.get("_draw_osd_values", -1) != 0 or have.get("_draw_flight_elements", -1) != 1:
+		return false
+	var s := GDScript.new()
+	s.source_code = GAME_OSD_SRC % str(base.resource_path)
+	if s.reload() != OK:
+		return false
+	var keep = n.get("bottom_overlay")
+	n.set_script(s)
+	if keep != null:
+		n.set("bottom_overlay", keep)
+	return n.get("zm_filter") != null
 
 
 func _exit_tree() -> void:
@@ -3040,5 +3511,10 @@ func _exit_tree() -> void:
 		_xlayer.queue_free()
 	if _game_box != null and is_instance_valid(_game_box):
 		_game_box.modulate.a = 1.0
+	if _game_osd != null and is_instance_valid(_game_osd):
+		_game_osd.modulate.a = 1.0
+		if _game_osd_ok:
+			_game_osd.set("zm_filter", Callable())
+			_game_osd.set("zm_hide_speed", false)
 	if _game_sticks != null and is_instance_valid(_game_sticks):
 		_game_sticks.modulate.a = 1.0

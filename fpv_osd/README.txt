@@ -1,4 +1,4 @@
-fpv_osd 1.2
+fpv_osd 1.5
 =================
 
 A Betaflight-style OSD for The Zone FPV - link quality, flight timer, battery,
@@ -35,11 +35,20 @@ SETTINGS
   font, the stick overlay, the crosshair and horizon, the battery warnings and
   the stats screen. Every setting has a description.
 
-  While the OSD is showing, the game's grey message box ("DISARMED", "Press R
-  to reset...") is hidden and the OSD's own warnings stand in for it;
-  hide_game_messages=false brings the box back. The OSD shows whatever the
-  game's Signal Simulation is set to, so turning the analog video off leaves
-  it on; show_in_digital=false shows it only with analog video.
+  While the OSD is showing, the game's own message display (its grey box, or
+  in the game's newer versions its own OSD text) leaves out what the OSD
+  shows itself - DISARMED, the arming warning, turtle mode, prop_damage's
+  line - and the "Press R to reset, T to flip over" hint, and in the newer
+  versions its speed; the OSD's own warnings stand in for them
+  (hide_game_messages=false: the game shows them too). The race timer, lap
+  count, track, times and medals stay where the game shows them, as does
+  the rest - the camera angle, the head tracker, the rate readout; to hide
+  those too, hide_game_race_info=true and hide_game_other_messages=true
+  (Pause > Mods > fpv_osd).
+
+  The OSD shows whatever the game's Signal Simulation is set to, so turning
+  the analog video off leaves it on; show_in_digital=false shows it only with
+  analog video.
 
 
 FONTS
@@ -142,9 +151,11 @@ STICK OVERLAY
   over the craft name). By default it is BrainFPV's: a small cross for each
   stick with a square where the stick is, in the bottom corners, redrawn 30
   times a second so it moves smoothly, and no bigger than the game's own
-  (sticks_size, sticks_x and sticks_y change that). sticks_style="betaflight"
-  gives Betaflight's instead: boxes of font characters with a dot that steps
-  about, as it does on a real Betaflight OSD.
+  (sticks_size, sticks_x and sticks_y change that); with the throttle, fuel
+  gauge or current shown under them, they sit just high enough to clear it.
+  sticks_style="betaflight" gives Betaflight's instead: boxes of font
+  characters with a dot that steps about, as it does on a real Betaflight
+  OSD.
 
 
 CROSSHAIR AND HORIZON
@@ -197,6 +208,33 @@ BATTERY WARNINGS
   QUICKSILVER's low-battery warning does (at 3.60 V a cell there): punches
   then do not set them off, and a pack that is really low still does. Until
   the gauge has learnt the pack's sag they behave as on the voltage shown.
+
+
+PROP DAMAGE
+  With the prop_damage mod, a prop hit comes up in the warnings for a couple
+  of seconds: which prop (FL, FR, RL, RR - front left to rear right) and how
+  worn it is, "PROP FR 23%", or "PROP FR LOST" blinking when one breaks off.
+  It comes after LAND NOW and before LOW BATTERY. show_props=true also keeps
+  each prop's wear on screen, at the left above the throttle, in a square as
+  the props sit (front ones on top, "--" for one lost) - once a prop is
+  damaged; new props clear it. prop_damage's own line in the game's grey
+  message box is left to the OSD while it shows them (show_prop_damage=false:
+  not shown here, and prop_damage puts its line back in the game's box, which
+  hide_game_messages hides).
+
+  prop_damage's quad - the quad seen from above with each prop's damage -
+  is drawn into this OSD in its own look, white outlined in black like
+  BrainFPV's drawn parts: each prop a ring that fills in white as it wears
+  (a quarter filled is 25% worn), an X for one broken off, and the prop just
+  hit blinking while its warning shows. Where it goes, its size and whether
+  it shows are prop_damage's settings (display, display_x, display_y,
+  display_size, display_opacity, display_only_damaged); its display="colour"
+  draws it in colour over the game instead.
+
+
+3D MODE
+  With mode_3d, the throttle goes below zero when the motors are reversed,
+  as Betaflight's OSD shows it in 3D mode: -45 is 45 percent backwards.
 
 
 POST-FLIGHT STATS
