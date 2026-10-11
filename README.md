@@ -7,7 +7,6 @@ override.cfg, the zonemods folder, and the folder for the mods you want should a
 
 Each mod has its own settings.cfg where they can be disabled individually, as well as many settings you can tweak.
 
-
 ## analog400mw
 simulates 400mw analog signal quality
 
@@ -23,16 +22,24 @@ The default method to equip a fresh battery is to DISARM and RESET. This will al
 
 ![Battery Sag](batterysag1.1.png)
 
+## Dirty Air 
+
+Cause you to leave air behind, lasting a second or two and spreading. Floor gives more thrust under the props and ceiling pulls the props up.
+
+![Dirty Air](dirtyair1.png)
+
+## Drones
+LATEST: Define propwash per-drone (wash and wake used by dirty_air), option to define rates per drone (off by default)
+
+All drone settings that interface with other mods. Allows you to create custom Drone presets with their own name, weight, thrust, top speed, drag on each axis, rotation/turtle torque, camera angle/fov/fisheye, prop size, motor and motor sound, battery and OSD craft name
+
+## Flight controller
+
+Each motor gets its own torque rather than them all getting idealized torque. Define Betaflight PIDs for motors, airmode option, and more
+
 ## fpv_osd
 
 OSD simulation, with features from Betaflight, BrainFPV, Quicksilver, and iNav. Replaces a few in-game UI elements and integrates them into OSD, like ARMED message, Turtle Mode/Crash flip, and gets rid of "press r to reset" message on ground touch. Custom crosshair support, horizon lines, custom layouts and font support, and more. Compatible with battery_sag mod to show battery life.
-
-## pilot_audio
-
-Choose if you want audio to be heard from spawn location or the drone itself, and optionally emulate drone sounds for other players in multiplayer lobbies. Configurable options for falloff, doppler effect, and more. Option for emulated propwash sounds if you have dirty_air enabled.
-
-## throttle fix
-Throttle Fix addresses the issue with the game initializing the throttle in the middle position until you move your throttle some amount.
 
 What it does:
 When your controller is initially connected, or reconnected, it will set your throttle to 0%. Since you have to be at 0 throttle to ARM the drone, your throttle will usually be all the way down. However, the game starts with 50% throttle, so you have to wiggle the gimbal to re-register what the true position is. This mod sets your throttle to 0 between your controller initialization and its first input.
@@ -43,13 +50,6 @@ It works out which end is "down" from your controller setup, so an inverted thro
 If you reconnect the radio mid-session, it does this again.
 A gamepad set up so the resting stick already means zero throttle is left alone.
 
-## Prop Damage
-
-Props can take damage, causing gyro noise and instability. Props can also break. Damage is fixed on reset, and ducted props take less damage. If fpv_osd is installed, it will put the damage UI into the OSD format.
-
-## examples/glb_anim
-Basic mod that plays and loops animations within a .glb file/map. It's an example mod, but it does allow for dynamic maps with moving parts and colliders.
-
 ## Mod settings
 
 lets you edit settings in-game (adds a Mods button to pause menu, or overlay with F9 key by default)
@@ -57,26 +57,25 @@ lets you edit settings in-game (adds a Mods button to pause menu, or overlay wit
 ![Mod settings](modsettings1.png)
 ![Mod settings](modsettings2.png)
 
+## pilot_audio
+
+Choose if you want audio to be heard from spawn location or the drone itself, and optionally emulate drone sounds for other players in multiplayer lobbies. Configurable options for falloff, doppler effect, and more. Option for emulated propwash sounds if you have dirty_air enabled.
+
+## player_list
+Provides new features to the player list: flyout menu behavior, and player join/leave messages in the chat.
+
+## Prop Damage
+
+Props can take damage, causing gyro noise and instability. Props can also break. Damage is fixed on reset, and ducted props take less damage. If fpv_osd is installed, it will put the damage UI into the OSD format.
+
 ## Rotor Drag
 
 simulates rotor drag. Configurable options per drone. Force grows with the speed itself. Removes the physics engine's hidden damping
 
 ![Rotor Drag](rotordrag1.png)
 
-## Drones
-LATEST: Define propwash per-drone (wash and wake used by dirty_air), option to define rates per drone (off by default)
-
-All drone settings that interface with other mods. Allows you to create custom Drone presets with their own name, weight, thrust, top speed, drag on each axis, rotation/turtle torque, camera angle/fov/fisheye, prop size, motor and motor sound, battery and OSD craft name
-
-## Dirty Air 
-
-Cause you to leave air behind, lasting a second or two and spreading. Floor gives more thrust under the props and ceiling pulls the props up.
-
-![Dirty Air](dirtyair1.png)
-
-## Flight controller
-
-Each motor gets its own torque rather than them all getting idealized torque. Define Betaflight PIDs for motors, airmode option, and more
+## throttle fix
+Throttle Fix addresses the issue with the game initializing the throttle in the middle position until you move your throttle some amount.
 
 ## zonemods
 
@@ -97,3 +96,6 @@ ZoneMods="*res://zonemods/zonemods.gd"
 ; Empty = every folder next to thezone.exe that has a zonemod.cfg.
 mods=""
 ```
+
+## examples/glb_anim
+Basic example mod that plays and loops animations within a .glb file/map. It's an example mod, but it does allow for dynamic maps with moving parts and colliders.
