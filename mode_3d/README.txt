@@ -1,4 +1,4 @@
-mode_3d 1.0
+mode_3d 1.1
 =================
 
 3D mode: motors that turn both ways, as on a quad flown with Betaflight's
@@ -24,6 +24,11 @@ THE THROTTLE (throttle)
   the game, the motors wait at idle until the throttle has been to the
   middle. A throttle stick that springs back to the middle makes this
   easiest; on a normal one, find the middle by feel.
+
+  Gamepads (an Xbox controller) work as they are: 3D mode sees when the
+  game maps the throttle as "Half range" and reads the whole stick - the
+  middle zero, down reversed, up forward - so letting go of the stick
+  stops the motors pushing.
 
   "switch" - Betaflight's 3D on a switch. The throttle works as usual (low
   is idle) and the switch you set for the game's turtle mode turns the

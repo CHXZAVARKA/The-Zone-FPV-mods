@@ -1,5 +1,5 @@
 extends Node
-## mode_3d 1.0
+## mode_3d 1.1
 ##
 ## 3D mode for The Zone FPV: motors that run both ways, as on a quad flown
 ## with Betaflight's 3D feature and bidirectional ESCs. Push the throttle
@@ -33,7 +33,7 @@ extends Node
 ##
 ## Uninstall: delete the mode_3d folder.
 
-const VERSION := "1.0"
+const VERSION := "1.1"
 const DIR := "res://mode_3d/"
 const GAME := "res://player_rigid_body.gdc"
 const COPY := "base/player_rigid_body.gdc"
@@ -168,6 +168,8 @@ func _set_dir(s: Dictionary, d: int) -> void:
 func map_setpoint(p, sp: Dictionary) -> Dictionary:
 	var s := state(p)
 	var t := clampf(float(sp.get("throttle", -1.0)), -1.0, 1.0)
+	if cfg["throttle"] != "switch":
+		t = _whole_stick(p, t)
 	s["raw"] = t
 	s["rev_t"] = float(s["rev_t"]) + 1.0 / maxf(float(Engine.physics_ticks_per_second), 1.0)
 	var armed := bool(p.call("is_armed"))
@@ -199,6 +201,35 @@ func map_setpoint(p, sp: Dictionary) -> Dictionary:
 	s["mag"] = mag
 	out["throttle"] = mag * 2.0 - 1.0
 	return out
+
+
+## A gamepad's throttle stick springs back to the middle, so the game's
+## controller setup maps only its upper half ("half range": the middle is zero
+## throttle, the lower half nothing). Centre mode wants the whole stick - the
+## middle zero, below it reversed - so it reads the stick again the way the
+## game does (z_input.apply_config), without the half range.
+func _whole_stick(p, t: float) -> float:
+	var zs = get_node_or_null("/root/ZSettings")
+	var maps = zs.get("INPUTS_V2") if zs != null else null
+	if not (maps is Dictionary) or not maps.has("throttle"):
+		return t
+	var m = maps["throttle"]
+	if not (m is Dictionary) or not bool(m.get("half_range", false)) or int(m.get("channel", -1)) < 0:
+		return t
+	var inp = p.get("_input")
+	if inp == null or not inp.has_method("get_inputs_v2"):
+		return t
+	var raw = inp.call("get_inputs_v2")
+	var ch := int(m["channel"])
+	if not (raw is Array) or ch >= raw.size():
+		return t
+	var v := remap(float(raw[ch]), float(m.get("min", -1.0)), float(m.get("max", 1.0)), -1.0, 1.0)
+	var c := float(m.get("center", 0.0))
+	if c != 0.0:
+		v = (v - c) * (1.0 / (1.0 - signf(v - c) * c))
+	if bool(m.get("inverted", false)):
+		v = -v
+	return clampf(v, -1.0, 1.0)
 
 
 ## Centre mode arms only with the throttle in the deadband at the middle, as
