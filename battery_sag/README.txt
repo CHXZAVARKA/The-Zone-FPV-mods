@@ -1,4 +1,4 @@
-battery_sag 1.2
+battery_sag 1.3
 =====================
 
 A flight pack for The Zone FPV that drains, sags under load and changes how
@@ -67,9 +67,17 @@ SETTINGS
 
   In [battery]: thrust_at_cell_volts is the voltage a cell under load that
   the game's thrust is for (3.6); 0 has a fresh pack fly exactly as the game
-  is tuned instead, as 1.1 did. sag_effect=0 keeps the handling as the game
-  has it while the pack still drains and sags on the OSD. sag_compensation
-  works like Betaflight's vbat_sag_compensation, against a fresh pack.
+  is tuned instead, as 1.1 did. It says what the game's figures mean, not
+  how strong the quad is. sag_effect=0 keeps the handling as the game has it
+  - a pack held at that 3.6 V - while the pack still drains and sags on the
+  OSD. sag_compensation works like Betaflight's vbat_sag_compensation,
+  against a fresh pack.
+
+  hold_cell_volts flies the quad as a pack held at a voltage of your choosing
+  would, all flight long, with no drain or sag in the handling: 3.8 is a
+  little stronger than the game's tuning (its motors get 3.8 / 3.6 of the
+  game's voltage), 3.4 a little weaker, 3.6 exactly the game's. The OSD
+  shows that voltage and the mAh still count. 0 (as shipped) = off.
 
 
 HOW IT WORKS

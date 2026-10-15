@@ -29,6 +29,12 @@ extends Node
 ## as the game is tuned instead (1.1). The game's own value comes back when
 ## the mod is not driving it.
 ##
+## hold_cell_volts: the quad flies as a pack held at that voltage a cell
+## under load would, all flight long - against the same thrust_at_cell_volts,
+## so 3.8 is a little more than the game's tuning and 3.4 a little less -
+## with no drain or sag in the handling (the OSD shows that voltage; the mAh
+## still count).
+##
 ## Packs: each of the game's quads gets a pack of its own (PACKS, and a
 ## section of settings.cfg per quad), picked from the quad you have selected
 ## and swapped in fresh when you change quad. A drone added by the drones mod
@@ -38,6 +44,7 @@ const DEFAULTS := {
 	"sag_effect": 1.0,
 	"sag_compensation": 0.0,
 	"thrust_at_cell_volts": 3.6,
+	"hold_cell_volts": 0.0,
 	"new_pack_on_respawn": "disarmed",
 }
 
@@ -137,8 +144,17 @@ func setup(dir: String) -> String:
 	for id in packs:
 		parts.append("%s %s" % [packs[id]["name"], describe(packs[id])])
 	var ref := float(cfg["thrust_at_cell_volts"])
-	return "battery: a pack for each quad - " + ", ".join(parts) + "; sag_effect %s; the game's thrust at %s" % [str(cfg["sag_effect"]),
+	var line := "battery: a pack for each quad - " + ", ".join(parts) + "; the game's thrust at %s" % [
 		("%s V a cell" % str(ref)) if ref > 0.0 else "a fresh pack's voltage"]
+	if _hold() > 0.0:
+		return line + "; held at %.2f V a cell: the quad flies as at that voltage all flight, no drain or sag in the handling" % _hold()
+	return line + "; sag_effect %s" % str(cfg["sag_effect"])
+
+
+## hold_cell_volts, kept to something a cell can be (0 = off)
+func _hold() -> float:
+	var h := float(cfg.get("hold_cell_volts", 0.0))
+	return clampf(h, 2.5, 4.5) if h > 0.0 else 0.0
 
 
 ## Settings changed while the game runs: the same pack flies on with them,
@@ -297,6 +313,9 @@ func motor_scale(throttle: float) -> float:
 	if ref <= 0.0:
 		ref = fresh
 	ref = maxf(ref, 0.5)
+	# held at one voltage: that against the game's, nothing else
+	if _hold() > 0.0:
+		return clampf(_hold() / ref, 0.2, 1.5)
 	var k := clampf(cell_voltage / ref, 0.2, 1.5)
 	var kf := clampf(fresh / ref, 0.2, 1.5)
 	var e := clampf(float(cfg["sag_effect"]), 0.0, 1.0)
@@ -309,7 +328,7 @@ func motor_scale(throttle: float) -> float:
 
 
 func report() -> Dictionary:
-	return {"cell_voltage": cell_voltage, "mah_used": mah_used, "cells": cells(), "current": current,
+	return {"cell_voltage": _hold() if _hold() > 0.0 else cell_voltage, "mah_used": mah_used, "cells": cells(), "current": current,
 		"lihv": bool(pack["lihv"]), "capacity_mah": capacity_mah(), "pack": describe(pack)}
 
 
@@ -351,7 +370,7 @@ func _physics_process(dt: float) -> void:
 			share = float(p.call("get_thrust_at_rpm", float(p.get("current_motor_rpm")))) / full
 	thrust_share = share if armed else 0.0
 	step(amps_for(thrust_share, armed), dt)
-	if not quad or float(cfg["sag_effect"]) <= 0.0:
+	if not quad or (float(cfg["sag_effect"]) <= 0.0 and _hold() <= 0.0):
 		_release()
 		return
 	# a short smoothing so the voltage and the motors do not chase each other
