@@ -63,7 +63,7 @@ Choose if you want audio to be heard from spawn location or the drone itself, an
 
 ## player_list
 Provides new features to the player list: flyout menu behavior, and player join/leave messages in the chat.
-![Player List](playerlist.gif)
+![Player List](playerlist.webp)
 
 ## Prop Damage
 
