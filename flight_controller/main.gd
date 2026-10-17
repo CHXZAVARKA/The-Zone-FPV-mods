@@ -1,5 +1,5 @@
 extends Node
-## flight_controller 1.1
+## flight_controller 1.3
 ##
 ## A flight controller for The Zone FPV's quads: four motors, each with its
 ## own speed and thrust at its own corner, set by a Betaflight-style rate
@@ -16,7 +16,7 @@ extends Node
 ##
 ## Uninstall: delete the flight_controller folder.
 
-const VERSION := "1.1"
+const VERSION := "1.3"
 const DIR := "res://flight_controller/"
 const GAME := "res://player_rigid_body.gdc"
 const COPY := "base/player_rigid_body.gdc"

@@ -32,6 +32,15 @@ extends RefCounted
 ##      and the motor's own torque speeding the rotor up or slowing it (its
 ##      moment of inertia times its change of speed: the spin it takes from
 ##      the frame or gives back)
+## With prop_damage, a damaged prop's thrust (and so its drag torque) is
+## what is left of it, and a prop out of balance shakes the gyro too.
+## With mode_3d (3D mode), the motors run both ways: the mixer turns its
+## corrections round when the throttle asks them to turn backwards
+## (Betaflight's motorOutputMixSign), each motor brakes to a stop and starts
+## again the other way to reverse (mode_3d's motor_step), a prop turning
+## backwards pushes the other way and less (reverse_thrust) for the same drag
+## torque, and the I term is held at zero for 0.25 s after the motors reverse,
+## as Betaflight holds it.
 ## The game still pushes the quad with one thrust at its centre, worked out
 ## from the motors' mean speed (fc.gd hands it that), along with its drag
 ## and wind; this adds, at each corner, that motor's difference from a
@@ -41,6 +50,10 @@ const KP := 0.032029
 const KI := 0.244381
 const KD := 0.000529
 const KF := 0.013754
+# prop_damage: gyro noise from props out of balance, at its vibration_level 1
+# (one prop badly out of balance at full speed) - what gets past the
+# filters, which take most of it out (it is at the prop's own frequency)
+const VIB_DPS := 20.0
 
 var mod = null                   # the flight_controller mod
 var prm := {}                    # the drone's parameters
@@ -70,7 +83,10 @@ var _gn := Vector3.ZERO          # the gyro's noise, band-limited, unit variance
 var _rng := RandomNumberGenerator.new()
 var _air = null                  # dirty_air's Air node, for how rough the air is
 var _air_look := 0
+var _pd = null                   # prop_damage's Props node
+var _pd_look := 0
 var _mix_range := 0.0            # the last mixer's spread of corrections (Betaflight's motorMixRange)
+var _rev := {}                   # mode_3d: each motor's wait, stopped to reverse
 var _fresh := true
 
 
@@ -121,6 +137,10 @@ func step(p, dt: float, sp: Dictionary) -> void:
 		if air != null:
 			wl = clampf(float(air.get("wash_level")), 0.0, 2.0)
 		noise_dps = gn * (1.0 + 3.0 * wl)
+	var pd = _props(p)
+	if pd != null:
+		noise_dps += VIB_DPS * clampf(float(pd.get("vibration_level")), 0.0, 4.0)
+	if noise_dps > 0.0:
 		var a := _pt1(dt, 100.0)
 		var sc := sqrt((2.0 - a) / a)
 		_gn += (Vector3(_rng.randfn(), _rng.randfn(), _rng.randfn()) * sc - _gn) * a
@@ -139,6 +159,16 @@ func step(p, dt: float, sp: Dictionary) -> void:
 	var idle_rpm := float(p._SETTINGS.internal_settings.dynamic_idle_rpm) if p._SETTINGS else 0.0
 	var tau_up: float = prm["tau_up"]
 	var tau_down: float = prm["tau_down"]
+	# mode_3d: the way the throttle asks the motors to turn (the throttle,
+	# thr, is its size), and how a motor reverses
+	var m3 = p.call("_zm3") if p.has_method("_zm3") else null
+	var s3: Dictionary = m3.state(p) if m3 != null else {}
+	var dir := float(s3.get("dir", 1))
+	var stop := 0.0
+	var rate := 0.0
+	if m3 != null:
+		stop = float(m3.stop_rpm(idle_rpm, float(p.MAX_MOTOR_RPM)))
+		rate = float(p.MOTOR_RPM_INC_PER_SECOND)
 
 	if not p.is_armed():
 		# disarmed: no corrections; the motors do what the game has them do
@@ -147,13 +177,16 @@ func step(p, dt: float, sp: Dictionary) -> void:
 		iterm = Vector3.ZERO
 		var target := maxf(kv * volts * thr, idle_rpm)
 		var s := 0.0
+		var ws := 0.0
 		for i in 4:
-			rpm[i] = _lag(rpm[i], target, dt, tau_up, tau_down)
+			rpm[i] = _motor(m3, i, rpm[i], target * dir, dt, tau_up, tau_down, rate, stop)
 			out[i] = 0.0
 			thrust[i] = 0.0
-			s += rpm[i]
+			s += absf(rpm[i])
+			ws += rpm[i]
 		mean_rpm = s / 4.0
 		pid_sum = Vector3.ZERO
+		_say_3d(m3, s3, ws)
 		return
 
 	# ---- PID (Betaflight units: deg/s in, "PID sum" out) ----
@@ -222,6 +255,9 @@ func step(p, dt: float, sp: Dictionary) -> void:
 	else:
 		for a in 3:
 			_i[a] = clampf(_i[a] + di[a], -lim, lim)
+	# mode_3d: none for a moment after the motors reverse, as Betaflight
+	if m3 != null and float(s3.get("rev_t", 99.0)) < float(m3.ITERM_HOLD_S):
+		_i = Vector3.ZERO
 	iterm = _i
 	var sum := p_term + _i + d_term + f_term
 	sum = Vector3(clampf(sum.x, -500.0, 500.0), clampf(sum.y, -400.0, 400.0), clampf(sum.z, -500.0, 500.0))
@@ -263,15 +299,15 @@ func step(p, dt: float, sp: Dictionary) -> void:
 	var spin: Array = prm["spin"]
 	var per_rpm: float = prm["rotor_j"] * prm["omega_max"] / maxf(float(p.MAX_MOTOR_RPM), 1.0) / dt
 	for i in 4:
-		var raw: float = t + mix[i]
+		var raw: float = t + dir * mix[i]
 		if raw > 1.0 or raw < 0.0:
 			saturated = true
 		var o := clampf(raw, 0.0, 1.0)
 		out[i] = idle + (1.0 - idle) * o
 		var target := maxf(kv * volts * out[i], idle_rpm)
 		var was: float = rpm[i]
-		rpm[i] = _lag(rpm[i], target, dt, tau_up, tau_down)
-		s2 += rpm[i]
+		rpm[i] = _motor(m3, i, rpm[i], target * dir, dt, tau_up, tau_down, rate, stop)
+		s2 += absf(rpm[i])
 		# the motor's own torque on the frame as it speeds its rotor up or
 		# slows it down: the rotor's angular momentum, taken from the frame
 		kick += -float(spin[i]) * per_rpm * (rpm[i] - was)
@@ -283,12 +319,44 @@ func step(p, dt: float, sp: Dictionary) -> void:
 	var pos: Array = prm["pos"]
 	var kq: float = prm["yaw_torque"]
 	var yaw := kick
+	var krev: float = float(m3.reverse_thrust()) if m3 != null else 1.0
+	var ws2 := 0.0
 	for i in 4:
-		thrust[i] = float(p.get_thrust_at_rpm(rpm[i])) * 0.25
+		var wr: float = rpm[i]
+		ws2 += wr
+		# what the prop takes to turn - its drag torque goes with it - and
+		# what it pushes: turning backwards (mode_3d), reverse_thrust of
+		# that, the other way
+		var load := (float(m3.thrust_reversed(p, -wr)) if wr < 0.0 else float(p.get_thrust_at_rpm(wr))) * 0.25
+		thrust[i] = -load * krev if wr < 0.0 else load
 		var local: Vector3 = pos[i]
+		if pd != null:
+			var f := float(pd.call("factor_at", local))
+			thrust[i] *= f
+			load *= f
 		p.apply_force(up * (thrust[i] - centre), basis * local)
-		yaw += -float(spin[i]) * kq * thrust[i]
+		yaw += -float(spin[i]) * kq * load * signf(wr)
 	p.apply_torque(up * yaw)
+	_say_3d(m3, s3, ws2)
+
+
+# A motor's next speed: towards its target, or with mode_3d turning round
+# through a stop to reverse
+func _motor(m3, i: int, w: float, target: float, dt: float, tau_up: float, tau_down: float, rate: float, stop: float) -> float:
+	if m3 == null:
+		return _lag(w, target, dt, tau_up, tau_down)
+	return float(m3.motor_step(w, target, dt, tau_up, tau_down, rate, stop, _rev, "m%d" % i))
+
+
+# mode_3d's state: the motors' mean speed, signed, and the way the props
+# push (for dirty_air and prop_damage)
+static func _say_3d(m3, s3: Dictionary, wsum: float) -> void:
+	if m3 == null:
+		return
+	s3["w"] = wsum / 4.0
+	if wsum != 0.0:
+		s3["sign"] = 1 if wsum > 0.0 else -1
+	s3["k"] = float(m3.reverse_thrust()) if int(s3["sign"]) < 0 else 1.0
 
 
 # dirty_air's Air node, if it is loaded (looked for again now and then)
@@ -301,6 +369,18 @@ func _dirty_air(p):
 		_air_look = 250
 		_air = p.get_node_or_null("/root/ZoneMods/dirty_air/Air")
 	return _air
+
+
+# prop_damage's Props node, if it is loaded and on
+func _props(p):
+	if _pd != null and is_instance_valid(_pd):
+		return _pd
+	_pd = null
+	_pd_look -= 1
+	if _pd_look <= 0:
+		_pd_look = 250
+		_pd = p.get_node_or_null("/root/ZoneMods/prop_damage/Props")
+	return _pd
 
 
 # The quad's grip on the ground. The game gives it the physics engine's

@@ -8,11 +8,16 @@ extends "res://flight_controller/base/player_rigid_body.gd"
 ## differences between them (controller.gd). Everything else - the drone's
 ## settings, thrust curve, drag, wind, turtle mode, sound - is the game's
 ## own, from a copy of its script made at each launch.
+## With mode_3d, the motors run both ways: the throttle as 3D mode reads it,
+## the stick shown as it is, arming as 3D mode arms, other players sent the
+## throttle as the motors have it (its main.gd), and controller.gd turning
+## each motor round through a stop.
 
 const ZM_FLIGHT_CONTROLLER := 1
 
 var zm_fc = null                 # this quad's controller
 var zm_fc_frame := -1            # the physics frame it last ran
+var zm3_mod = null               # mode_3d
 
 
 func _handle_rotation(delta: float, setpoint: Dictionary) -> float:
@@ -41,3 +46,43 @@ func _zm_controller():
 			return null
 		zm_fc = mod.new_controller()
 	return zm_fc
+
+
+# mode_3d, when it has this quad run the motors both ways (not for the wing,
+# which the game flies with a physics handler of its own)
+func _zm3():
+	if zm3_mod == null or not is_instance_valid(zm3_mod):
+		var tree := get_tree()
+		zm3_mod = tree.root.get_node_or_null("ZoneMods/mode_3d") if tree != null else null
+	if zm3_mod == null or not bool(zm3_mod.get("via_fc")) or physics_handler != null:
+		return null
+	return zm3_mod
+
+
+func apply_setpoint_latency(current_setpoint: Dictionary):
+	var sp = super(current_setpoint)
+	var m = _zm3()
+	if m == null or not (sp is Dictionary):
+		return sp
+	return m.map_setpoint(self, sp)
+
+
+func _check_arm_switch(setpoint: Dictionary):
+	var m = _zm3()
+	if m == null:
+		super(setpoint)
+		return
+	stick_pos.z = float(m.state(self)["raw"])
+	var keep = throttle_input
+	if m.arm_blocked(self):
+		throttle_input = 1.0
+	super(setpoint)
+	throttle_input = keep
+
+
+func get_udp_position():
+	var a = super()
+	var m = _zm3()
+	if m != null and a is Array and a.size() > 3 and a[3] is Vector4:
+		a[3] = m.udp_stick(self, a[3])
+	return a

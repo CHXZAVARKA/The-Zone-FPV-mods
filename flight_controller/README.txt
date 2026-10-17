@@ -1,4 +1,4 @@
-flight_controller 1.1
+flight_controller 1.3
 =======================
 
 A flight controller for the quad: Betaflight's rate PIDs, mixer and airmode,
@@ -96,6 +96,23 @@ WITH THE OTHER MODS
   and motors come from drones/settings.cfg, shared with those mods; a
   drone added by the drones mod uses its block's prop_mm, ducted,
   wheelbase_mm and motor_ms, and the rest from the quad it is built on.
+
+  With prop_damage, a damaged prop gives its motor only what is left of its
+  thrust (and its drag torque, so yaw is off too), and a prop out of balance
+  shakes the gyro - up to 20 degrees a second more noise for a prop badly
+  out at full speed - which the D term turns into busy, twitchy motors. The
+  PIDs fly the damaged quad as a real one flies: the weak corner's motor
+  spins up to make up for it and runs out first in a punch.
+
+  With mode_3d (3D mode), the motors run both ways. Each one turns round on
+  its own - braking to a stop, standing a moment and starting the other way
+  - so crossing the middle of the throttle the quad wobbles while they are
+  stopped, as a real one does. Betaflight's mixer turns its corrections
+  round with the motors (motorOutputMixSign), so the sticks fly the quad the
+  same either way up, and the I term is held at zero for a quarter of a
+  second after the motors reverse, as Betaflight holds it. A prop turning
+  backwards pushes the other way and less (mode_3d's reverse_thrust), for
+  the same drag torque.
 
 
 HOW IT WORKS
