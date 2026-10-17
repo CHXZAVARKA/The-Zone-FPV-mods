@@ -6,21 +6,22 @@ extends RefCounted
 ##     var specs = load("res://drones/specs.gd")
 ##     var d: Dictionary = specs.figures(vehicle_id, core)
 ## d has name, base (the game drone it is, or is built on, or "other"),
-## prop_mm, ducted, wheelbase_mm and motor_ms. A drone this mod adds gets what
+## prop_mm, ducted, wheelbase_mm and motor_ms, and dirty_air's wash and wake
+## for the drone. A drone this mod adds gets what
 ## its block sets (through zm_vehicle), the rest from the drone it is built
 ## on; any other id gets [other]'s. It works whether or not the mod adds any
 ## drones. generation() goes up each time the settings are read again - after
 ## a change in the game, through mod_settings - so a mod knows to look again.
 
 const DIR := "res://drones/"
-const KEYS := ["prop_mm", "ducted", "wheelbase_mm", "motor_ms"]
+const KEYS := ["prop_mm", "ducted", "wheelbase_mm", "motor_ms", "wash", "wake"]
 const NAMES := {
 	"65mm_freestyle": "65mm Whoop", "85mm_freestyle": "85mm Whoop", "2.5in_freestyle": "2.5\" Freestyle",
 	"3.5in_freestyle": "3.5\" Freestyle", "5in_freestyle": "5\" Freestyle", "beginner_5_in_quad": "Beginner 5\"",
 	"5in_racer": "5\" Racer", "other": "any other quad",
 }
 # only if a figure is missing from both settings files
-const LAST_RESORT := {"prop_mm": 40.0, "ducted": true, "wheelbase_mm": 75.0, "motor_ms": 30.0}
+const LAST_RESORT := {"prop_mm": 40.0, "ducted": true, "wheelbase_mm": 75.0, "motor_ms": 30.0, "wash": 1.0, "wake": 1.0}
 
 static var _table := {}
 static var _gen := 0
@@ -35,7 +36,7 @@ static func read_settings() -> void:
 		if c.load(DIR + f) != OK:
 			continue
 		for sec in c.get_sections():
-			if sec == "mod":
+			if sec in ["mod", "rates"]:
 				continue
 			if not t.has(sec):
 				t[sec] = {"name": str(NAMES.get(sec, sec))}
@@ -87,7 +88,7 @@ static func figures(vehicle_id: String, core: Node = null) -> Dictionary:
 			base = "other"
 		var d := _full(_table[base])
 		d["base"] = base
-		for part in ["rotor", "motor"]:
+		for part in ["rotor", "motor", "air"]:
 			var r = v.get(part, {})
 			if r is Dictionary:
 				for k in r:

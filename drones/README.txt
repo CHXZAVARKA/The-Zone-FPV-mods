@@ -1,4 +1,4 @@
-drones 1.0
+drones 1.1
 =============
 
 Every drone in one place. Each drone's props, frame and motors - set once
@@ -19,10 +19,23 @@ THE GAME'S DRONES
     wheelbase_mm  motor to motor, diagonally across the frame, mm
     motor_ms      the motors' time constant: ms to close 63% of a throttle
                   change
+    wash, wake    dirty_air's prop wash and the air left behind, for this
+                  drone (times dirty_air's own; 1 = as worked out)
   rotor_drag and dirty_air use the props, dirty_air and flight_controller
-  the frame, motor_response and flight_controller the motors. With
+  the frame, motor_response and flight_controller the motors, dirty_air the
+  wash and wake. With
   mod_settings, pick the drone in Pause > Mods > drones and change one: each
   of those mods takes it at once. Or edit the file, save, restart the game.
+
+
+RATES PER DRONE
+  The game has one set of rates for every drone. Set per_drone=true under
+  [rates] in drones/settings.cfg (or with mod_settings, in Pause > Mods >
+  drones) and each drone keeps its own: change the rates on the game's Rates
+  page while a drone is picked and they stay with that drone; pick another
+  and its own come back at once. A drone picked for the first time starts
+  with the rates you had. Your added drones count as drones of their own.
+  The rates are kept in drones/rates.cfg - delete it to start again.
 
 
 MORE DRONES
@@ -73,15 +86,17 @@ THRUST AND WEIGHT
   thrust= is all the motors together at full throttle, in grams, on the
   scale the game's own drones use: the maker's thrust-to-weight ratio times
   the all-up weight. The game's 65mm Whoop - 28 g and 160 g of thrust, 5.7:1
-  - matches the ratios makers give for its class of motor; the Meteor75 Pro
+  - is in the range makers give for its class of motor; the Meteor75 Pro
   II, rated 6.33:1 at 42 g, gets 266 g. The Physics menu shows the ratio.
   weight= is all-up, battery included, and a few grams change how a whoop
   flies, so weigh yours with the pack you fly.
 
-  With battery_sag, a fresh pack gives the block's thrust. As the pack's
-  voltage falls - fast at first on a LiHV, from 4.35 V - so does the motors'
-  top speed, the same on every drone: after a minute of hard flying a punch
-  has about 80% of the fresh pack's thrust, after two about 75%.
+  With battery_sag, the block's thrust is what a pack sagging to 3.6 V a
+  cell gives (as the game's developer has its own drones' figures), so a
+  fresh pack gives more - a punch on a fresh 1S pack about 15% more. As the
+  pack's voltage falls - fast at first on a LiHV, from 4.35 V - so does the
+  motors' top speed, the same on every drone: after a minute of hard flying
+  a punch has about 80% of the fresh pack's thrust, after two about 75%.
   sag_effect=0 in battery_sag/settings.cfg keeps the full thrust all flight
   (the pack still drains and sags on the OSD).
 

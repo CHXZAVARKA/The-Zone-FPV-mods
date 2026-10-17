@@ -1,5 +1,5 @@
 extends Node
-## drones 1.0
+## drones 1.1
 ##
 ## Every drone in one place, for The Zone FPV:
 ##   - each drone's props, frame and motors (settings.cfg, a section per game
@@ -48,10 +48,13 @@ extends Node
 ## the game next goes on from the pause menu, where it reads the drone's
 ## settings again. hide= takes effect at the next start.
 ##
+## Rates per drone (settings.cfg [rates] per_drone): rates.gd keeps each
+## drone's rates in rates.cfg and puts them back when the drone is picked.
+##
 ## Uninstall: delete the drones folder (rotor_drag, dirty_air,
 ## motor_response and flight_controller need it).
 
-const VERSION := "1.0"
+const VERSION := "1.1"
 const DIR := "res://drones/"
 const SPECS := preload("res://drones/specs.gd")
 
@@ -91,6 +94,11 @@ const ROTOR_KEYS := {
 const MOTOR_KEYS := {
 	"motor_ms": "motor_ms",
 }
+# ... and dirty_air's, for the drone
+const AIR_KEYS := {
+	"wash": "wash",
+	"wake": "wake",
+}
 const OTHER_KEYS := ["name", "description", "base", "craft_name", "hide"]
 
 # The game's scripts this stands in for: a copy of each (class_name renamed)
@@ -115,6 +123,7 @@ var _first_frame := true
 var _raced := {}
 var _log := PackedStringArray()
 var _core: Node = null
+var _rates: Node = null         # rates.gd: rates per drone
 
 # On mod_settings' page: a block's settings in this order, named and noted
 # (props and motors take the notes the game's drones have there)
@@ -122,14 +131,17 @@ const PAGE_KEYS := ["name", "description", "base", "weight", "thrust", "top_spee
 	"drag_top_bottom", "drag_front_back", "camera_angle", "camera_fov", "camera_fisheye", "rotation", "turtle",
 	"corner_drag", "idle_rpm", "sound_pitch", "battery_mah", "battery_cells", "battery_lihv",
 	"battery_full_throttle_amps", "battery_idle_amps", "battery_resistance_mohm", "prop_mm", "ducted",
-	"wheelbase_mm", "motor_ms", "craft_name", "hide"]
+	"wheelbase_mm", "motor_ms", "wash", "wake", "craft_name", "hide"]
+# shown for every added drone, from the drone it is built on if its block
+# leaves them out (a change adds the line to the block)
+const PAGE_ALWAYS := ["prop_mm", "ducted", "wheelbase_mm", "motor_ms", "wash", "wake"]
 # ... under these small titles, each before the first of its settings
-const PAGE_GROUPS := {"weight": "Flight", "battery_mah": "Battery", "prop_mm": "Props and motors", "craft_name": "OSD"}
+const PAGE_GROUPS := {"weight": "Flight", "battery_mah": "Battery", "prop_mm": "Props and motors", "wash": "Dirty air", "craft_name": "OSD"}
 const PAGE_LABELS := {"base": "Built on", "weight": "Weight (g)", "thrust": "Thrust (g)", "top_speed": "Top speed (km/h)",
 	"drag_left_right": "Drag left/right (%)", "drag_top_bottom": "Drag top/bottom (%)",
 	"drag_front_back": "Drag front/back (%)", "camera_angle": "Camera angle (degrees)", "camera_fov": "Camera FOV",
 	"rotation": "Rotation torque", "turtle": "Turtle torque", "idle_rpm": "Idle rpm", "battery_lihv": "Battery LiHV",
-	"craft_name": "OSD craft name", "hide": "Hide"}
+	"craft_name": "OSD craft name", "hide": "Hide", "wash": "Prop wash"}
 const PAGE_NOTES := {
 	"name": "Its name in the drone list.",
 	"description": "Shown under its name in the drone list.",
@@ -182,6 +194,14 @@ func zm_init(core: Node, _dir: String) -> void:
 				names.append("%s [%s] on the game's %s" % [_presets[id].get("name", id), id, _game_names.get(_presets[id]["base"], _presets[id]["base"])])
 			_say("added after the game's own drones: " + ", ".join(names))
 			_say("in multiplayer each is sent as the game drone it is built on; race runs on them are not sent to the online leaderboard")
+	var rs = load(DIR + "rates.gd")
+	if rs is Script and rs.can_instantiate():
+		_rates = rs.new()
+		_rates.name = "Rates"
+		add_child(_rates)
+		_say(_rates.setup([DIR + "settings.default.cfg", DIR + "settings.cfg"], _game_dir().path_join("rates.cfg")))
+	else:
+		_say("could not load rates.gd: rates are one set for every drone")
 	_write_status()
 
 
@@ -198,6 +218,8 @@ func zm_apply_settings() -> void:
 		_say("my_drones.cfg read again: %s changed - the game takes them when it next goes on from the pause menu" % ", ".join(changed))
 		for id in changed:
 			_tell_changed(id)
+	if _rates != null and is_instance_valid(_rates):
+		_say(_rates.setup([DIR + "settings.default.cfg", DIR + "settings.cfg"], _game_dir().path_join("rates.cfg")))
 	_write_status()
 
 
@@ -229,16 +251,19 @@ func zm_settings_more() -> Array:
 			"title": str(c.get_value(id, "name", id)) + (" (hidden)" if hidden or not added else "")})
 		var keys := Array(c.get_section_keys(id))
 		var group := ""
+		# what the drone it is built on has, for the figures its block leaves out
+		var fig: Dictionary = SPECS.figures(base if base in _game_ids else "other")
 		for k in PAGE_KEYS:
 			if PAGE_GROUPS.has(k):
 				group = PAGE_GROUPS[k]
-			if not k in keys:
+			if not k in keys and not k in PAGE_ALWAYS:
 				continue
 			if group != "":
 				items.append({"kind": "group", "section": id, "file": "my_drones.cfg", "text": group})
 				group = ""
+			var val = c.get_value(id, k) if k in keys else fig.get(k)
 			var it := {"kind": "value", "section": id, "file": "my_drones.cfg", "key": k,
-				"default": var_to_str(c.get_value(id, k)), "desc": PAGE_NOTES.get(k, ""), "label": PAGE_LABELS.get(k, "")}
+				"default": var_to_str(val), "desc": PAGE_NOTES.get(k, ""), "label": PAGE_LABELS.get(k, "")}
 			if k == "base":
 				it["options"] = _game_ids.duplicate()
 				it["option_names"] = _game_names.duplicate()
@@ -370,7 +395,7 @@ func _checked(id: String, b: Dictionary) -> Dictionary:
 				bad.append("%s (true or false, without quotes)" % k)
 				b.erase(k)
 			continue
-		if KEYS.has(k) or BATTERY_KEYS.has(k) or ROTOR_KEYS.has(k) or MOTOR_KEYS.has(k):
+		if KEYS.has(k) or BATTERY_KEYS.has(k) or ROTOR_KEYS.has(k) or MOTOR_KEYS.has(k) or AIR_KEYS.has(k):
 			if typeof(b[k]) != TYPE_INT and typeof(b[k]) != TYPE_FLOAT:
 				bad.append("%s (a number, without quotes)" % k)
 				b.erase(k)
@@ -469,8 +494,12 @@ func zm_vehicle(id: String) -> Dictionary:
 	for k in MOTOR_KEYS:
 		if b.has(k):
 			motor[MOTOR_KEYS[k]] = float(b[k])
+	var air := {}
+	for k in AIR_KEYS:
+		if b.has(k):
+			air[AIR_KEYS[k]] = float(b[k])
 	return {"id": id, "name": str(b.get("name", id)), "base": str(b["base"]), "battery": bat,
-		"rotor": rotor, "motor": motor, "craft_name": str(b.get("craft_name", ""))}
+		"rotor": rotor, "motor": motor, "air": air, "craft_name": str(b.get("craft_name", ""))}
 
 
 ## api.gd: a race run on a preset was not sent to the leaderboard
