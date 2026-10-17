@@ -1,4 +1,4 @@
-prop_damage 1.0
+prop_damage 1.1
 =================
 
 Props that chip, wear and break when they hit things. A clipped prop tip

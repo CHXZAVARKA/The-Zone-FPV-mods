@@ -1,5 +1,5 @@
 extends Node
-## prop_damage 1.0
+## prop_damage 1.1
 ##
 ## Props that chip, bend and break when they hit things, for The Zone FPV:
 ## less thrust, a prop out of balance shaking the quad, a clipped tip kicking
@@ -10,7 +10,7 @@ extends Node
 ##
 ## Uninstall: delete the prop_damage folder.
 
-const VERSION := "1.0"
+const VERSION := "1.1"
 const DIR := "res://prop_damage/"
 const KEEP_LINES := 60
 

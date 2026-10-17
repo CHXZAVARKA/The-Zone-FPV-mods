@@ -387,7 +387,7 @@ func _physics_process(dt: float) -> void:
 		for i in 4:
 			var rpm := float(p.get("current_motor_rpm"))
 			if fc != null:
-				rpm = float(fc.rpm[_fc_index(fc, i)])
+				rpm = absf(float(fc.rpm[_fc_index(fc, i)]))       # mode_3d: either way round
 			if full > 0.0:
 				spin[i] = clampf(float(p.call("get_thrust_at_rpm", rpm)) / full, 0.0, 1.2)
 	var xf := body.global_transform
@@ -511,6 +511,11 @@ func _physics_process(dt: float) -> void:
 		# the game's thrust is at the centre, a quarter each prop's
 		var quarter := maxf(float(p.call("get_thrust_at_rpm", float(p.get("current_motor_rpm")))), 0.0) * 0.25
 		var up := xf.basis.y.normalized()
+		# mode_3d: props turning backwards push the other way, and less
+		var z3 = p.get_meta("zm3") if p.has_meta("zm3") else null
+		if z3 is Dictionary and int(z3.get("sign", 1)) < 0:
+			up = -up
+			quarter *= float(z3.get("k", 1.0))
 		for i in 4:
 			var lost: float = quarter * (1.0 - float(thrust_factor[i]))
 			if lost > 0.0:
