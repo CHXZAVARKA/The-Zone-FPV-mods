@@ -1,4 +1,4 @@
-dirty_air 1.1
+dirty_air 1.3
 ==================
 
 Flying into your own dirty air, and near floors and ceilings. The Zone FPV
@@ -6,7 +6,8 @@ gives a quad the same thrust falling as hovering, and none of the prop wash
 you get dropping or punching out through the air the props have just thrown
 down, or flying back through where you punched or hovered; nor any cushion
 over the floor or pull towards a ceiling. dirty_air adds them, from
-measurements on small props where they exist.
+measurements on small props where they exist. Two options, off until you
+turn them on, add other pilots' dirty air in multiplayer and gusty wind.
 
 
 FALLING INTO YOUR OWN WAKE
@@ -86,6 +87,43 @@ THE AIR YOU LEAVE BEHIND
   descent drags along is the vortex ring state above.
 
 
+OTHER PILOTS' AIR (others_wake, off until you turn it on)
+  Other players' quads leave the same columns of air behind them. The game
+  sends where each one is, its attitude and its throttle, many times a
+  second; dirty_air works out its thrust from the game's own figures for its
+  drone (its weight, its thrust and its props) and how it moves, and leaves
+  its air as it leaves yours. Fly behind or under someone - chasing them
+  through a gap, or hovering under them - and their air takes your lift and
+  shakes you as your own does: hovering 1.5 m under another 5", its air
+  comes down through your props at about 7 m/s, and holding height takes a
+  fifth more motor speed. The nearest three within 40 m count. Nothing is
+  sent to the other players; they need the mod to feel yours.
+
+
+WIND (wind_kph) AND GUSTS (gusts, off until you turn it on)
+  wind_kph is the game's own wind: the same as /set wind_speed in its chat
+  (0 to 50 km/h). Change it here, or in Pause > Mods > dirty_air, and the
+  game's wind changes; set it in the chat and wind_kph shows it. Like
+  /set wind_speed it lasts until the game closes - the game starts with no
+  wind, and wind_kph goes back to 0 with it.
+
+  The game's wind is one steady push the same everywhere, swelling slowly,
+  and nearly gone behind anything upwind. With gusts on, the wind has
+  turbulence: random
+  gusts along it, across it and up and down, from the standard low-altitude
+  turbulence model (MIL-F-8785C, Dryden form) - at turbulence=1 about a fifth
+  of the wind's speed along and across it and an eighth up and down, in
+  gusts about 30 m across (5 m up and down), swept past you at the wind's
+  speed and your own. Each prop gets the up-and-down gusts through it, with
+  a part of its own where the eddies are small, so the quad bobs and rocks;
+  the rest pushes it about.
+
+  Behind a building or wall upwind, where the game's wind drops, the air
+  churns: gusts of a third of the open wind's speed, in eddies the size of
+  the gap to the building. With no wind there is nothing to gust. The game's
+  own wind force, and the drift of the air you leave behind, follow it all.
+
+
 FLOORS AND CEILINGS
   Under each prop and over it, dirty_air looks for a surface:
     - Floor: more thrust within about five prop radii - +15% one radius
@@ -109,6 +147,10 @@ SETTINGS
   fluctuation both; wake the air left behind; wash how much each prop's
   thrust comes and goes in either, leaving the lift lost as it is.
 
+  others_wake and gusts are switches; wind_kph is the game's wind (km/h, as
+  /set wind_speed, see above), and turbulence how gusty it is (1 = a gusty
+  day near buildings, 2 = twice that, 0.5 = half).
+
   wake and wash are for every drone. Each drone also has its own, in
   drones/settings.cfg (Pause > Mods > drones, picking the drone): the two
   multiply, so wash=2 on the Meteor with wash=1 here gives the Meteor twice
@@ -124,7 +166,11 @@ SETTINGS
 
 
 MULTIPLAYER AND RACES
-  Only the quad you fly is changed, on your computer.
+  Only the quad you fly is changed, on your computer. With others_wake, you
+  feel the other players' air; they do not feel yours unless they have the
+  mod too. The wind and its gusts are on your computer only: other players
+  have their own (or none), as with /set wind_speed. Race runs record the
+  game's wind setting, as ever - wind_kph is that setting.
 
 
 INSTALL
