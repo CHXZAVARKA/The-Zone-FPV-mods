@@ -1,5 +1,5 @@
 extends Node
-## pilot_audio 1.1
+## pilot_audio 1.3
 ##
 ## Hear the quad from where the pilot stands: loudness, tone, delay, doppler
 ## and stereo by distance and direction from the spawn point, and optionally
@@ -8,7 +8,7 @@ extends Node
 ##
 ## Uninstall: delete the pilot_audio folder.
 
-const VERSION := "1.1"
+const VERSION := "1.3"
 const DIR := "res://pilot_audio/"
 
 var _audio: Node = null

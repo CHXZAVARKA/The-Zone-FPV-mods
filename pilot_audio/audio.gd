@@ -20,6 +20,24 @@ extends Node
 ## each physics tick and swaps in what the pilot hears. The sums run 100 times
 ## a second.
 ##
+## listen_from="drone" moves the listener onto your own quad instead - its
+## FPV camera, turning as it turns: your quad sounds as the game plays it,
+## and other players' quads are heard from where you fly (doppler now counts
+## your own speed too).
+##
+## In prop wash (dirty_air's wash_level, the same roughness its shake and
+## flight_controller's gyro noise follow), the motor sound warbles - the
+## motors hunting as the flight controller fights the dirty air: the pitch
+## and loudness jitter around 6 and 30 Hz, sized by propwash_sound.
+## Other players' quads warble the same way when they fall through their own
+## wake (propwash_others): worked out from what the game receives for them -
+## their attitude, their throttle and how they move - as dirty_air works out
+## your own (the vortex ring state: falling at about half to 1.7 times their
+## props' wake speed, worst at 1.1, unless they move across it).
+## With prop_damage, a damaged prop - out of balance - makes the motor sound
+## rough: a fast flutter of pitch and loudness, more the worse the prop and
+## the faster it spins (prop_damage's vibration_level).
+##
 ## Other players' quads (multiplayer) make no sound in the game. With
 ## multiplayer on, each gets the same motor sound, driven by the throttle the
 ## game receives for it the way the game drives your own, heard the same way.
@@ -39,6 +57,30 @@ const BUS_LOCAL := "PilotAudio"
 const BUS_REMOTE := "PilotAudioMP"
 const FADE_S := 0.25                 # other players' sounds fade in and out
 const KEEP := 0.8                    # a quad heard is counted this much nearer
+const MAX_LISTENER_SPEED := 150.0    # faster than this between sums: a jump (respawn), not flight
+# prop wash: at dirty_air's wash_level 1 (the heart of its wake) the motor
+# sound's pitch wanders by this fraction (rms) and its loudness by this many dB
+const WASH_PITCH := 0.045
+const WASH_DB := 1.8
+# a damaged prop, at prop_damage's vibration_level 1: flutter of the pitch
+# (rms) and loudness (dB)
+const ROUGH_PITCH := 0.012
+const ROUGH_DB := 1.5
+# other players' quads in their own wake: dirty_air's vortex ring state
+const RHO := 1.225
+const VRS_CENTRE := 1.1
+const VRS_WIDTH := 0.45
+# the game's drones, for other players' (they send which one): weight (g),
+# thrust (g), prop diameter (mm) - default_vehicles.gd and drones/settings.cfg
+const REMOTE_DRONES := {
+	"65mm_freestyle": [28.0, 160.0, 31.0], "85mm_freestyle": [69.0, 400.0, 40.0],
+	"2.5in_freestyle": [83.0, 550.0, 64.0], "3.5in_freestyle": [290.0, 1800.0, 89.0],
+	"5in_freestyle": [680.0, 5500.0, 127.0], "beginner_5_in_quad": [680.0, 3000.0, 127.0],
+	"5in_racer": [480.0, 6000.0, 127.0],
+}
+# the game's thrust per motor speed (player_rigid_body.gd's RPM_THRUST_CURVE),
+# at 0, 10 .. 90% of top speed
+const THRUST_CURVE := [0.1, 0.4, 0.5, 0.6, 0.7, 0.79, 0.84, 0.9, 0.95, 1.0]
 
 # the game's motor model (player_rigid_body.gd), for other players' quads
 const MOTOR_KV := 1400.0
@@ -67,6 +109,9 @@ const DEFAULTS := {
 	"multiplayer": true,
 	"multiplayer_max": 8,
 	"mute_in_background": true,
+	"listen_from": "spawn",
+	"propwash_sound": 1.0,
+	"propwash_others": true,
 }
 
 
@@ -107,6 +152,10 @@ class Src:
 	var env := 0.0                   # remote: fading in and out, 0-1
 	var leaving := false             # remote: no longer wanted, fading out
 	var out_db := -80.0              # remote: what its player was last set to
+	var vel := Vector3.ZERO          # remote: how it moves, from where it is seen
+	var wl := 0.0                    # remote: how deep in its own wake, smoothed
+	var jn := [0.0, 0.0, 0.0]        # remote: its prop-wash noise
+	var wash := 0.0                  # remote: its pitch factor - 1 this time
 
 
 var cfg := {}
@@ -131,6 +180,9 @@ var _width := 0.8
 var _mp := true
 var _mp_max := 8
 var _mute_bg := true
+var _onboard := false                # listen_from="drone"
+var _wash_amt := 1.0                 # propwash_sound
+var _wash_others := true             # propwash_others
 
 var _scene: Node = null
 var _local: Src = null
@@ -146,6 +198,23 @@ var _t := 0.0
 var _upd_t := 1.0
 var _ray_t := 0.0
 var _forward := Vector3(0, 0, -1)
+var _right := Vector3(1, 0, 0)
+var _listener_prev := Vector3.ZERO
+var _listener_vel := Vector3.ZERO
+var _have_prev := false
+var _cam: Node3D = null              # the quad's FPV camera, listen_from="drone"
+# prop wash
+var _da: Node = null                 # dirty_air's Air node
+var _da_look := 0
+var _wl := 0.0                       # its wash_level, smoothed
+var _jn := [0.0, 0.0, 0.0, 0.0, 0.0] # noise: pitch fast, pitch slow, loudness; a damaged prop's pitch, loudness
+var _pd: Node = null                 # prop_damage's Props node
+var _pd_look := 0
+var _rough := 0.0                    # its vibration_level, smoothed
+var _rng := RandomNumberGenerator.new()
+var _src_pitch := 1.0                # the game's pitch and loudness, with the wash in
+var _src_vol := 0.0
+var wash_jitter := 0.0               # for tests and report(): the pitch factor - 1 this tick
 var _stream: AudioStream = null
 var _next_bus := 0
 var _pool: Array = []                # remote buses not in use, kept for reuse
@@ -180,10 +249,20 @@ func setup(dir: String) -> String:
 	_mp = bool(cfg["multiplayer"])
 	_mp_max = int(cfg["multiplayer_max"])
 	_mute_bg = bool(cfg["mute_in_background"])
+	_onboard = str(cfg["listen_from"]).strip_edges().to_lower() == "drone"
+	_wash_amt = maxf(float(cfg["propwash_sound"]), 0.0)
+	_wash_others = bool(cfg["propwash_others"])
+	_have_prev = false
+	_listener_vel = Vector3.ZERO
+	_cam = null
 	# after the game's player has set the motor sound each physics tick
 	process_physics_priority = 1000
-	var parts := ["pilot at the spawn point, %.1f m up, facing the spawn's way%s" % [_height,
-		(" turned %+d degrees" % int(_facing_off)) if _facing_off != 0.0 else ""]]
+	var parts := []
+	if _onboard:
+		parts.append("listening from the drone: its FPV camera (your quad as the game plays it; the spawn when there is no quad)")
+	else:
+		parts.append("pilot at the spawn point, %.1f m up, facing the spawn's way%s" % [_height,
+			(" turned %+d degrees" % int(_facing_off)) if _facing_off != 0.0 else ""])
 	parts.append("full volume within %.1f m, then %.1f dB quieter each time the distance doubles" % [_ref, 6.02 * _falloff])
 	var fx := []
 	if _air:
@@ -196,6 +275,8 @@ func setup(dir: String) -> String:
 		fx.append("stereo (width %.2f)" % _width)
 	parts.append("effects: " + (", ".join(fx) if not fx.is_empty() else "none"))
 	parts.append(("multiplayer: other players' quads heard, up to %d" % _mp_max) if _mp else "multiplayer: off")
+	parts.append(("prop wash: the motor sound warbles in dirty air (x%.2f; needs dirty_air)%s" % [_wash_amt,
+		", other players' quads' too" if _wash_others and _mp else ""]) if _wash_amt > 0.0 else "prop wash: off")
 	return "\n".join(parts)
 
 
@@ -220,6 +301,7 @@ func _physics_process(dt: float) -> void:
 			_quiet_remotes()
 		if not sources.is_empty():
 			var pilot := _pilot()
+			_track_listener(pilot, step)
 			var do_rays := false
 			_ray_t += step
 			if _ray_t >= 1.0 / RAY_HZ:
@@ -247,19 +329,29 @@ func _capture_local() -> void:
 	if p != _written_pitch or v != _written_vol:
 		_game_pitch = p
 		_game_vol = v
+	_wash(get_physics_process_delta_time())
 	# every tick, so the pitch the pilot hears changes as smoothly as the game's
-	if _delay and _local != null and is_instance_valid(_local.node):
-		_record(_local, _local.node.global_position, _game_pitch, _game_vol)
+	if _delay and not _onboard and _local != null and is_instance_valid(_local.node):
+		_record(_local, _local.node.global_position, _src_pitch, _src_vol)
 
 
 func _write_local() -> void:
-	if not _delay or _local == null or _local.te < 0.0 or _qa == null or not is_instance_valid(_qa):
+	if _local == null or _qa == null or not is_instance_valid(_qa):
 		return
-	# the game's pitch and loudness from when the sound left, with the doppler
-	# worked out at the last sums
-	_at(_local, _t - _local.delay)
-	_out_pitch = maxf(_a_pitch * _local.doppler, 0.01)
-	_out_vol = _a_vol
+	if _delay and not _onboard:
+		if _local.te < 0.0:
+			return
+		# the game's pitch and loudness from when the sound left, with the
+		# doppler worked out at the last sums
+		_at(_local, _t - _local.delay)
+		_out_pitch = maxf(_a_pitch * _local.doppler, 0.01)
+		_out_vol = _a_vol
+	elif (_wash_amt > 0.0 or _rough > 0.0) and (wash_jitter != 0.0 or _written_pitch >= 0.0):
+		# heard as it is made: only the prop wash to put in
+		_out_pitch = maxf(_src_pitch, 0.01)
+		_out_vol = _src_vol
+	else:
+		return
 	_qa.pitch_scale = _out_pitch
 	_qa.volume_db = _out_vol
 	_written_pitch = _qa.pitch_scale
@@ -269,6 +361,15 @@ func _write_local() -> void:
 # ---- the pilot ----
 
 func _pilot() -> Vector3:
+	if _onboard and _local != null and is_instance_valid(_local.node):
+		var cam := _fpv_cam()
+		var ct: Transform3D = cam.global_transform if cam != null else _local.node.global_transform
+		var f := -ct.basis.z
+		var r := ct.basis.x
+		if f.length() > 0.01 and r.length() > 0.01:
+			_forward = f.normalized()
+			_right = r.normalized()
+		return ct.origin
 	if _gs == null or not is_instance_valid(_gs):
 		_gs = get_node_or_null("/root/ZGamestate")
 	var rt = _gs.get("respawn_transform") if _gs != null else null
@@ -277,7 +378,131 @@ func _pilot() -> Vector3:
 	f.y = 0.0
 	if f.length() > 0.2:
 		_forward = f.normalized().rotated(Vector3.UP, -deg_to_rad(_facing_off))
+	_right = _forward.cross(Vector3.UP).normalized()
 	return t.origin + Vector3(0, _height, 0)
+
+
+# The quad's FPV camera (Player/Vehicle/CameraHolder/Camera3D in the game),
+# else the camera its view shows.
+func _fpv_cam() -> Node3D:
+	if _cam != null and is_instance_valid(_cam) and _local != null and _local.node.is_ancestor_of(_cam):
+		return _cam
+	_cam = null
+	var n := _local.node
+	var c := n.get_node_or_null("Vehicle/CameraHolder/Camera3D") as Node3D
+	if c == null:
+		c = n.find_child("Camera3D", true, false) as Node3D
+	if c == null and n.get_viewport() != null:
+		c = n.get_viewport().get_camera_3d()
+		if c != null:
+			return c                 # not the quad's own: looked for again next time
+	_cam = c
+	return c
+
+
+# How fast the listener moves, for the doppler of a quad heard from another.
+func _track_listener(pos: Vector3, dt: float) -> void:
+	if _have_prev and dt > 0.0:
+		var v := (pos - _listener_prev) / dt
+		if v.length() < MAX_LISTENER_SPEED:
+			_listener_vel += (v - _listener_vel) * (1.0 - exp(-dt / 0.05))
+		else:
+			_listener_vel = Vector3.ZERO
+	_listener_prev = pos
+	_have_prev = true
+
+
+# Prop wash: dirty_air's wash_level (0 in clean air, 1 in the heart of the
+# quad's own wake) makes the motors hunt. Noise at about 30 Hz (the band
+# Betaflight's tuning notes give for prop wash) and 6 Hz goes on the pitch,
+# and some on the loudness, into _src_pitch and _src_vol.
+func _wash(dt: float) -> void:
+	_src_pitch = _game_pitch
+	_src_vol = _game_vol
+	wash_jitter = 0.0
+	if dt <= 0.0:
+		return
+	var armed := true
+	if _local != null and is_instance_valid(_local.node) and _local.node.has_method("is_armed"):
+		armed = bool(_local.node.call("is_armed"))
+	var wl := 0.0
+	if _wash_amt > 0.0 and armed:
+		var da := _dirty_air()
+		if da != null:
+			wl = clampf(float(da.get("wash_level")), 0.0, 1.5)
+	_wl += (wl - _wl) * (1.0 - exp(-dt / 0.08))
+	if _wl < 0.002:
+		_wl = 0.0
+	# a damaged prop
+	var rough := 0.0
+	if armed:
+		var pd := _prop_damage()
+		if pd != null:
+			rough = clampf(float(pd.get("vibration_level")), 0.0, 4.0)
+	_rough += (rough - _rough) * (1.0 - exp(-dt / 0.05))
+	if _rough < 0.002:
+		_rough = 0.0
+	if _wl <= 0.0 and _rough <= 0.0:
+		return
+	for i in 5:
+		var fc: float = [30.0, 6.0, 20.0, 45.0, 40.0][i]
+		var a := 1.0 - exp(-TAU * fc * dt)
+		_jn[i] += (_rng.randfn() * sqrt((2.0 - a) / a) - _jn[i]) * a
+	var k := _wash_amt * _wl
+	var r := sqrt(_rough)
+	wash_jitter = clampf(WASH_PITCH * k * (0.75 * _jn[0] + 0.66 * _jn[1]) + ROUGH_PITCH * r * _jn[3], -0.3, 0.3)
+	_src_pitch = _game_pitch * (1.0 + wash_jitter)
+	_src_vol = _game_vol + WASH_DB * k * clampf(_jn[2], -3.0, 3.0) + ROUGH_DB * r * clampf(_jn[4], -3.0, 3.0)
+
+
+# Another player's quad in its own wake: how deep (0-1), from its attitude,
+# its throttle (its motors' speed, s.rpm, as the game's model has it) and how
+# it moves - the vortex ring state as dirty_air has it, against the wake
+# speed of its props at the thrust the game would give it
+func _remote_wake(s: Src) -> float:
+	var vid := str(s.node.get("_current_vehicle")) if s.node.get("_current_vehicle") != null else ""
+	var d: Array = REMOTE_DRONES.get(vid, REMOTE_DRONES["5in_freestyle"])
+	var r := clampf(s.rpm / MAX_MOTOR_RPM, 0.0, 1.0)
+	var x := r * 10.0
+	var i := mini(int(x), THRUST_CURVE.size() - 1)
+	var c: float = THRUST_CURVE[i] if i >= THRUST_CURVE.size() - 1 else lerpf(THRUST_CURVE[i], THRUST_CURVE[i + 1], x - i)
+	var thrust := float(d[1]) / 1000.0 * 9.8 * r * c
+	var rad := float(d[2]) / 2000.0
+	var vh := sqrt(maxf(thrust, 1e-3) / (2.0 * RHO * 4.0 * PI * rad * rad))
+	var up := s.node.global_transform.basis.y.normalized()
+	var air := s.vel
+	if _gs == null or not is_instance_valid(_gs):
+		_gs = get_node_or_null("/root/ZGamestate")
+	var wind = _gs.get("current_wind_effect") if _gs != null else null
+	if wind is Vector3:
+		air -= wind
+	var vz := air.dot(up)
+	if vz >= 0.0:
+		return 0.0
+	var vx := (air - up * vz).length()
+	return exp(-pow((-vz / vh - VRS_CENTRE) / VRS_WIDTH, 2.0)) * maxf(0.0, 1.0 - vx / vh)
+
+
+func _prop_damage() -> Node:
+	if _pd != null and is_instance_valid(_pd):
+		return _pd
+	_pd = null
+	_pd_look -= 1
+	if _pd_look <= 0:
+		_pd_look = 240
+		_pd = get_node_or_null("/root/ZoneMods/prop_damage/Props")
+	return _pd
+
+
+func _dirty_air() -> Node:
+	if _da != null and is_instance_valid(_da):
+		return _da
+	_da = null
+	_da_look -= 1
+	if _da_look <= 0:
+		_da_look = 240
+		_da = get_node_or_null("/root/ZoneMods/dirty_air/Air")
+	return _da
 
 
 # ---- sources ----
@@ -478,6 +703,26 @@ func _step(s: Src, dt: float, pilot: Vector3, do_rays: bool, focus: bool) -> voi
 		# the game does not say whether they are armed: sat still at zero
 		# throttle for a moment counts as disarmed
 		var moved := pos.distance_to(s.last_pos) / dt if s.have_pos else 0.0
+		if s.have_pos and moved < MAX_LISTENER_SPEED:
+			s.vel += ((pos - s.last_pos) / dt - s.vel) * (1.0 - exp(-dt / 0.1))
+		else:
+			s.vel = Vector3.ZERO
+		# falling through its own wake, its motors hunt too
+		s.wash = 0.0
+		if _wash_amt > 0.0 and _wash_others:
+			var w := _remote_wake(s) if thr > 0.02 else 0.0
+			s.wl += (w - s.wl) * (1.0 - exp(-dt / 0.08))
+			if s.wl > 0.002:
+				for j in 3:
+					var fcj: float = [30.0, 6.0, 20.0][j]
+					var aj := 1.0 - exp(-TAU * fcj * dt)
+					s.jn[j] += (_rng.randfn() * sqrt((2.0 - aj) / aj) - s.jn[j]) * aj
+				var kw := _wash_amt * s.wl
+				s.wash = clampf(WASH_PITCH * kw * (0.75 * s.jn[0] + 0.66 * s.jn[1]), -0.3, 0.3)
+				pitch *= 1.0 + s.wash
+				vol += WASH_DB * kw * clampf(s.jn[2], -3.0, 3.0)
+			else:
+				s.wl = 0.0
 		s.quiet_s = s.quiet_s + dt if thr < 0.05 and moved < 0.3 else 0.0
 		var on := focus and s.quiet_s < 1.5 and not s.leaving
 		if on and not s.player.playing:
@@ -492,6 +737,20 @@ func _step(s: Src, dt: float, pilot: Vector3, do_rays: bool, focus: bool) -> voi
 	else:
 		pitch = _game_pitch
 		vol = _game_vol
+		if _onboard:
+			# your own quad, heard from on it: as the game plays it
+			s.last_pos = pos
+			s.have_pos = true
+			s.game_pitch = pitch
+			s.pitch = _src_pitch
+			s.doppler = 1.0
+			s.delay = 0.0
+			s.distance = 0.0
+			s.azimuth = 0.0
+			s.occl = 0.0
+			s.occl_target = 0.0
+			_apply(s, dt, 0.0, 20000.0, 0.0, vol)
+			return
 	s.last_pos = pos
 	s.have_pos = true
 	s.game_pitch = pitch
@@ -513,7 +772,8 @@ func _step(s: Src, dt: float, pilot: Vector3, do_rays: bool, focus: bool) -> voi
 		# faster than any quad flies: a respawn, not flight
 		if vel.length_squared() < 22500.0:
 			var away := (src - pilot).normalized()
-			s.doppler = clampf(SOUND_SPEED / maxf(SOUND_SPEED + vel.dot(away), 1.0), 0.5, 2.0)
+			# a listener on a quad moving towards it hears it higher too
+			s.doppler = clampf((SOUND_SPEED + _listener_vel.dot(away)) / maxf(SOUND_SPEED + vel.dot(away), 1.0), 0.5, 2.0)
 	s.pitch = maxf(pitch * s.doppler, 0.01)
 	if s.remote:
 		s.player.pitch_scale = s.pitch
@@ -521,8 +781,7 @@ func _step(s: Src, dt: float, pilot: Vector3, do_rays: bool, focus: bool) -> voi
 	var d := src - pilot
 	var dist := d.length()
 	s.distance = dist
-	var right := _forward.cross(Vector3.UP)
-	var hx := d.dot(right)
+	var hx := d.dot(_right)
 	var hz := d.dot(_forward)
 	var hfrac := sqrt(hx * hx + hz * hz) / maxf(dist, 0.001)
 	var az := atan2(hx, hz)                    # 0 ahead, +90 right, 180 behind
@@ -545,12 +804,17 @@ func _step(s: Src, dt: float, pilot: Vector3, do_rays: bool, focus: bool) -> voi
 	fc *= 1.0 - 0.3 * behind
 	# stereo
 	var p := clampf(_width * sin(az) * hfrac, -1.0, 1.0) if _stereo else 0.0
+	_apply(s, dt, g, fc, p, vol)
+
+
+# Smooth towards loudness g (dB), cutoff fc and pan p, and set what changed.
+# Another player's loudness goes on its player, ramped by Godot across each
+# mix, with the fade on top.
+func _apply(s: Src, dt: float, g: float, fc: float, p: float, vol: float) -> void:
 	var k := 1.0 - exp(-dt / SMOOTH_S)
 	s.gain += (g - s.gain) * k
 	s.cutoff = exp(lerpf(log(s.cutoff), log(fc), k))
 	s.panv += (p - s.panv) * k
-	# only what changed. Another player's loudness goes on its player, ramped
-	# by Godot across each mix, with the fade on top.
 	if s.remote:
 		s.out_db = vol + s.gain
 		s.player.volume_db = s.out_db + linear_to_db(maxf(s.env, 0.0001))
@@ -656,7 +920,7 @@ func _blocked(s: Src, pilot: Vector3, src: Vector3) -> float:
 	for o in sources:
 		if is_instance_valid(o.node) and o.node is CollisionObject3D:
 			ex.append((o.node as CollisionObject3D).get_rid())
-	var side := _forward.cross(Vector3.UP)
+	var side := _right
 	var hits := 0
 	for off in [Vector3.ZERO, Vector3.UP, side]:
 		var to: Vector3 = src + off
@@ -679,5 +943,7 @@ func report() -> Array:
 		out.append({"distance": s.distance, "gain_db": s.gain, "cutoff_hz": s.set_cutoff, "pan": s.panv,
 			"pitch": s.pitch, "game_pitch": s.game_pitch, "doppler": s.doppler, "delay": s.delay,
 			"walls": s.occl, "azimuth": s.azimuth, "remote": s.remote,
+			"listener": "drone" if _onboard else "spawn",
+			"wash": wash_jitter if not s.remote else s.wash, "wake": s.wl if s.remote else _wl,
 			"playing": s.player.playing if is_instance_valid(s.player) else false})
 	return out

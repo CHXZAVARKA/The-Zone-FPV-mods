@@ -1,4 +1,4 @@
-pilot_audio 1.1
+pilot_audio 1.3
 =================
 
 Hear the quad from where you stand. The Zone FPV plays the motor sound as if
@@ -15,6 +15,22 @@ what reaches you there - how loud, how muffled, how late and from which side:
 
 In multiplayer, other players' quads get a motor sound too (the game has none
 for them), heard the same way.
+
+Or listen from the drone (listen_from="drone"): you ride along at your quad's
+camera, turning as it turns. Your quad sounds as the game plays it, and other
+players' quads are heard from where you fly - nearer and louder as you close
+in, left or right of your camera, their pitch rising as you fly at each other.
+
+In prop wash the motor sound warbles - its pitch and loudness jitter as the
+motors hunt in the dirty air, more the rougher it is (propwash_sound; needs
+dirty_air, which works out how rough the air is). Other players' quads
+warble too when they fall through their own wake (propwash_others): pilot_audio
+works it out from their attitude, throttle and how they move, as dirty_air
+does for yours, so this part does not need dirty_air.
+
+With prop_damage, a damaged prop - out of balance - makes the motor sound
+rough: a fast flutter of pitch and loudness, more the worse the prop and the
+harder it spins.
 
 The spawn point is also where the game's analog video link is measured from,
 so the picture and the sound agree. The game's S key moves the spawn to where
@@ -42,8 +58,10 @@ UNINSTALL
 SETTINGS
   Edit pilot_audio/settings.cfg (made at the first launch), save, restart the game.
   Each effect can be turned off, and how fast the sound fades, how wide the
-  stereo is and which way you face can be set. The game's volume slider still
-  sets the overall level.
+  stereo is, which way you face, whether you listen from the spawn or the
+  drone and how much prop wash is heard can be set. The game's volume slider
+  still sets the overall level. With mod_settings, Pause > Mods > pilot_audio
+  changes them in the game, at once.
 
 
 OTHER PLAYERS
