@@ -17,9 +17,11 @@ const KV := "^([A-Za-z0-9_]+)\\s*=\\s*(.*?)\\s*$"
 ##   {kind: "heading", text}
 ##   {kind: "section", section, text}
 ##   {kind: "note", section, text}
-##   {kind: "value", section, key, default (as written), type, desc, options}
+##   {kind: "value", section, key, default (as written), type, desc, options, range}
 ## type is TYPE_BOOL, TYPE_INT, TYPE_FLOAT or TYPE_STRING; options are the
-## quoted choices a string's note lists, when it lists its own default.
+## quoted choices a string's note lists, when it lists its own default; range
+## is a number's [low, high] when its note gives one as "N to M" ("0 to 50")
+## with its default in it, else [].
 static func parse(text: String) -> Array:
 	var sec_re := RegEx.create_from_string(SEC)
 	var kv_re := RegEx.create_from_string(KV)
@@ -82,6 +84,7 @@ static func parse(text: String) -> Array:
 			"type": type_of_raw(d), "desc": desc, "shares_note": desc == "" and last_was_key, "options": []}
 		if item["type"] == TYPE_STRING:
 			item["options"] = _options(desc, from_raw(d, TYPE_STRING))
+		item["range"] = _range(desc, d) if item["type"] == TYPE_INT or item["type"] == TYPE_FLOAT else []
 		items.append(item)
 		last_was_key = true
 	_flush(items, pending, sec)
@@ -132,6 +135,17 @@ static func _options(desc: String, value: String) -> Array:
 	if out.size() >= 2 and value in out:
 		return out
 	return []
+
+
+# "N to M" in a number's note, N under M and its default between them
+static func _range(desc: String, value: String) -> Array:
+	var m := RegEx.create_from_string("(-?\\d+(?:\\.\\d+)?) to (-?\\d+(?:\\.\\d+)?)\\b").search(desc)
+	if m == null:
+		return []
+	var lo := m.get_string(1).to_float()
+	var hi := m.get_string(2).to_float()
+	var v := value.to_float()
+	return [lo, hi] if lo < hi and v >= lo and v <= hi else []
 
 
 static func type_of_raw(raw: String) -> int:
@@ -251,8 +265,8 @@ static func with_values(text: String, changes: Dictionary) -> String:
 const WORDS := {"mah": "mAh", "mohm": "mOhm", "amps": "A", "hz": "Hz", "db": "dB", "percent": "%",
 	"lihv": "LiHV", "lipo": "LiPo", "fov": "FOV", "osd": "OSD", "rssi": "RSSI", "lq": "LQ", "hud": "HUD",
 	"pids": "PIDs", "fpv": "FPV", "vtx": "VTX", "inav": "INAV", "kv": "KV", "tpa": "TPA", "iterm": "I term",
-	"dterm": "D term", "p": "P", "i": "I", "d": "D", "f": "F"}
-const UNITS := ["mm", "ms", "mah", "mohm", "amps", "hz", "db", "percent"]
+	"dterm": "D term", "p": "P", "i": "I", "d": "D", "f": "F", "kph": "km/h"}
+const UNITS := ["mm", "ms", "mah", "mohm", "amps", "hz", "db", "percent", "kph"]
 
 
 ## "hit_rate" -> "Hit rate"; a number's unit in brackets: "prop_mm" ->

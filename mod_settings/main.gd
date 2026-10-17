@@ -1,5 +1,5 @@
 extends Node
-## mod_settings 1.0
+## mod_settings 1.1
 ##
 ## Every mod's settings in the game: a "Mods" page in the pause menu, and the
 ## same as an overlay a key opens while you fly, so you see a change as you
@@ -29,7 +29,7 @@ extends Node
 ##
 ## Uninstall: delete the mod_settings folder.
 
-const VERSION := "1.0"
+const VERSION := "1.1"
 const DIR := "res://mod_settings/"
 const DOC := preload("res://mod_settings/cfgdoc.gd")
 const PANEL := preload("res://mod_settings/panel.gd")

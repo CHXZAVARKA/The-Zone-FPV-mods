@@ -473,13 +473,18 @@ func _row(id: String, item: Dictionary, raw: String) -> Control:
 	return box
 
 
-## A slider over a sensible range and a number box that takes any value;
-## the slider stretches to a value typed past its end
+## A slider over a sensible range (the note's "N to M", when it gives one)
+## and a number box that takes any value; the slider stretches to a value
+## typed past its end
 func _number(row: HBoxContainer, item: Dictionary, v: float, send: Callable) -> void:
 	var d := float(preload("cfgdoc.gd").from_raw(item["default"], item["type"]))
 	var is_int: bool = item["type"] == TYPE_INT
 	var top := maxf(absf(d) * 2.0, 10.0 if is_int else 1.0)
 	var low := -top if d < 0.0 or v < 0.0 else 0.0
+	var rng: Array = item.get("range", [])
+	if rng.size() == 2:
+		low = float(rng[0])
+		top = float(rng[1])
 	top = maxf(top, v)
 	low = minf(low, v)
 	var step := 1.0 if is_int or absf(d) >= 20.0 else (0.05 if absf(d) >= 1.0 else 0.01)

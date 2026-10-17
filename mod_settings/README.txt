@@ -1,4 +1,4 @@
-mod_settings 1.0
+mod_settings 1.1
 ====================
 
 Every mod's settings in the game, with the changes showing as you make them:
@@ -75,9 +75,12 @@ FOR MOD MAKERS
   say why, shown at the top of its settings:
       func zm_settings_status() -> String           # "" when they do
   A string setting whose note lists quoted choices, its default among them,
-  is shown as a list of those choices. Three or more sections in a row are
-  shown one at a time, picked from a list (named after the game's drones
-  when they are drones, otherwise from the start of each section's note).
+  is shown as a list of those choices. A number whose note gives its range
+  as "N to M" ("0 to 50"), its default in it, gets a slider over that range
+  (otherwise one from 0 to twice its default). Three or more sections in a
+  row are shown one at a time, picked from a list (named after the game's
+  drones when they are drones, otherwise from the start of each section's
+  note).
 
   Settings kept in another .cfg file in the mod's folder can be shown on its
   page and written into that file, with
