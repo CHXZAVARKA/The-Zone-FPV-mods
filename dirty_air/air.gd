@@ -9,12 +9,16 @@ extends Node
 ##     the props' hover wake speed vh, +8% at vh, +14% at 1.5 vh
 ##   - from about half vh to 1.7 vh the props sit in their own wake (the
 ##     vortex ring state), deepest at 1.1 vh: thrust drops to about 0.7 of
-##     hover and each prop's fluctuates by 17% (ducted) or 30% (open props) -
-##     measured on small props at constant rpm, 0.7 of hover at 1.2-1.3 vh
-##     and 14-20% (Veismann et al. 2023), but met earlier and over a wider
-##     band by a quad flying, its props' speed changing, than on a test
-##     stand (as in Propwash FPV's model); flying across the wake at vh or
-##     more clears it
+##     hover - measured on small props at constant rpm, 0.7 of hover at
+##     1.2-1.3 vh (Veismann et al. 2023)
+##   - each prop's thrust also fluctuates there, by 17% (ducted) or 30%
+##     (open props) at its deepest (14-20% measured, as above). A quad
+##     flying meets that earlier and over a wider band than a test stand
+##     does, its props' speed changing (as in Propwash FPV's model), so the
+##     fluctuation keeps its own, wider band about the same 1.1 vh: a 75 mm
+##     whoop's blackbox has the uncommanded gyro already half of its
+##     deepest by a third of vh, where the thrust loss above is still flat
+##   - flying across the wake at vh or more clears both
 ##   - the fluctuation is each prop's own, so besides a bob it rocks the
 ##     quad; and a quad in its wake shakes (prop wash) as its flight
 ##     controller and motors fight that - the shake is added as a small
@@ -40,7 +44,10 @@ extends Node
 ## as a disc the air is forced through (the descent curve above, and 0.9 x
 ## the dynamic pressure's change on the disc beyond it). Each prop has its
 ## own gusts, but alike where the eddies are bigger than the frame. The quad's own column counts only once it has
-## left it; the wake of a steady descent is the vortex ring state above.
+## left it; the wake of a steady descent is the vortex ring state above, and
+## the column stops being left behind where that band has half come in,
+## rather than at a fixed rate of descent, so there is no band between the
+## two in which a quad descending gently meets neither.
 ##
 ## Near a floor each prop gains thrust, from the multirotor ground-effect
 ## model of Sanchez-Cuevas et al. (2017), which fits a Crazyflie's measured
@@ -100,7 +107,15 @@ const SPECS_PATH := "res://drones/specs.gd"
 const DESCENT := [[0.0, 1.0], [-0.5, 1.04], [-1.0, 1.08], [-1.5, 1.14], [-2.0, 1.39], [-2.5, 1.78]]
 const DESCENT_MAX := 1.5
 const VRS_CENTRE := -1.1
-const VRS_WIDTH := 0.45
+const VRS_WIDTH := 0.45         # the mean thrust loss: as measured on a test stand
+# The fluctuation is felt over a wider band than the loss: a quad flying
+# meets it earlier and more gently than a test stand does. Blackbox from a
+# 75 mm whoop (40 mm props in ducts, 790 Hz) has the uncommanded gyro
+# already half of its deepest value by a third of vh, where the loss curve
+# above is still flat, so the two no longer share one width.
+const VRS_WASH_WIDTH := 0.75
+const VRS_HANDOVER := 0.5       # the wake is left behind until the band carries this much
+const VRS_QUARTER := 1.1774     # sqrt(ln 4): where a band is a quarter as deep
 const VRS_LOSS := 0.3           # thrust at the heart of the wake: 0.7 of the mean
 const VRS_SIGMA := 0.17         # each prop's thrust fluctuation there, in ducts
 const OPEN_ROUGH := 1.75        # props in the open fluctuate this much more (0.30)
@@ -149,7 +164,8 @@ var _spec_gen := -1
 var drone := {}
 var drone_id := "-"
 # what the last tick did, for the tests and status
-var wake := 0.0                 # how deep in its own wake (0-1)
+var wake := 0.0                 # how deep in its own wake, for the thrust loss (0-1)
+var wake_wash := 0.0            # the same, over the wider band the fluctuation is felt over (0-1)
 var descent_ratio := 1.0        # mean thrust ratio from the descent
 var ground := [1.0, 1.0, 1.0, 1.0]
 var ceiling := [1.0, 1.0, 1.0, 1.0]
@@ -485,7 +501,10 @@ func _physics_process(dt: float) -> void:
 		if get_parent() != null and get_parent().has_method("drone_changed"):
 			var vh := hover_wake(float(body.mass))
 			get_parent().call("drone_changed", "flying %s: %s; its wake at hover %.1f m/s, so prop wash falling at about %.1f-%.1f m/s at hover throttle, worst at %.1f; its own wash %s and wake %s" % [
-				drone["name"], describe(drone), vh, 0.5 * vh, 1.7 * vh, -VRS_CENTRE * vh, str(drone.get("wash", 1.0)), str(drone.get("wake", 1.0))])
+				drone["name"], describe(drone), vh,
+				(-VRS_CENTRE - VRS_QUARTER * VRS_WASH_WIDTH) * vh,
+				(-VRS_CENTRE + VRS_QUARTER * VRS_WASH_WIDTH) * vh,
+				-VRS_CENTRE * vh, str(drone.get("wash", 1.0)), str(drone.get("wake", 1.0))])
 	if dt <= 0.0:
 		return
 	_clock += dt
@@ -507,6 +526,7 @@ func _physics_process(dt: float) -> void:
 	var armed: bool = p.has_method("is_armed") and bool(p.call("is_armed")) and p.get("turtle_mode_active") != true
 	if not armed:
 		wake = 0.0
+		wake_wash = 0.0
 		wake_flow = Vector3.ZERO
 		gusts = 0.0
 		wash_level = 0.0
@@ -554,10 +574,14 @@ func _physics_process(dt: float) -> void:
 	var strength := float(cfg["descent"])
 	var mean := 1.0
 	wake = 0.0
+	wake_wash = 0.0
 	if _x < 0.0:
 		var across := 1.0 / (1.0 + pow(vx / vh, 2.0))
 		mean = 1.0 + (descent_curve(_x) - 1.0) * across
-		wake = exp(-pow((_x - VRS_CENTRE) / VRS_WIDTH, 2.0)) * maxf(0.0, 1.0 - vx / vh)
+		# flying across the wake at vh or more clears it, for both bands
+		var swept := maxf(0.0, 1.0 - vx / vh)
+		wake = exp(-pow((_x - VRS_CENTRE) / VRS_WIDTH, 2.0)) * swept
+		wake_wash = exp(-pow((_x - VRS_CENTRE) / VRS_WASH_WIDTH, 2.0)) * swept
 		mean *= 1.0 - VRS_LOSS * wake
 	mean = 1.0 + (mean - 1.0) * strength
 	# old wake blowing through the props as a climb would (the game's own
@@ -580,7 +604,7 @@ func _physics_process(dt: float) -> void:
 	_tilt += -_tilt * kt + Vector2(_gauss(), _gauss()) * sqrt(2.0 * kt)
 	var wash := float(cfg["wash"]) * float(drone.get("wash", 1.0))
 	var rough := 1.0 if bool(drone.get("ducted", true)) else OPEN_ROUGH
-	var sigma := VRS_SIGMA * rough * wake * strength * wash
+	var sigma := VRS_SIGMA * rough * wake_wash * strength * wash
 	vrs_sigma = sigma
 	# the old wake's gusts: eddies about 0.4 of its half-width, swept through
 	# the props at the speed the air passes them; neighbouring props share
@@ -646,9 +670,12 @@ func _physics_process(dt: float) -> void:
 
 	wash_level = clampf((sigma + gusts) / (VRS_SIGMA * rough), 0.0, 2.0)
 
-	# leave some wake: not while falling along the thrust axis (that wake
-	# stays round the props, and is the vortex ring state above)
-	if ws > 0.0 and vz > -0.25 * vh:
+	# leave some wake: as the props sink into it the vortex ring state above
+	# takes over, so hand over to it where it has come in rather than at a
+	# fixed rate of descent - stopping at a quarter of vh left a band, which
+	# a quad descending gently flies in, where neither acted. Flying across,
+	# which clears the band, leaves the wake behind as before.
+	if ws > 0.0 and wake_wash < VRS_HANDOVER:
 		var since := _clock - _wlast_t
 		if _wlast_t < 0.0 or since >= WAKE_EVERY or (since >= WAKE_MOST and origin.distance_to(_wlast_p) >= 0.5 * _frame):
 			_leave_puff(origin, up, vh, vz, vx)
@@ -657,7 +684,7 @@ func _physics_process(dt: float) -> void:
 
 	# prop wash shake: a resonator around SHAKE_HZ driven by noise, at unit
 	# variance, sized by how deep in the wake the quad is
-	var amp := deg_to_rad(SHAKE_DEG) * wake * float(cfg["shake"])
+	var amp := deg_to_rad(SHAKE_DEG) * wake_wash * float(cfg["shake"])
 	var w0 := TAU * SHAKE_HZ
 	var steps := 4
 	var h := dt / steps
