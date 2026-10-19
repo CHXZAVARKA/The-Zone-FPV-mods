@@ -118,6 +118,8 @@ var _presets := {}             # the blocks that passed the checks
 var _order: Array = []
 var _game_ids: Array = []
 var _game_names := {}
+var _unmatched: Array = []     # the game's drones with no block of their own
+var _game_keys: Array = []     # the figures the game itself keeps for a drone
 var _on := false               # mounted and in effect: the presets are in the game
 var _first_frame := true
 var _raced := {}
@@ -175,6 +177,7 @@ func zm_init(core: Node, _dir: String) -> void:
 	_core = core
 	_say("drones %s" % VERSION)
 	SPECS.read_settings()
+	_read_game_drones()
 	_list_figures()
 	_read_blocks()
 	var want := 0
@@ -285,9 +288,18 @@ func zm_restart_keys() -> PackedStringArray:
 
 ## mod_settings: how the page's changes take effect
 func zm_settings_status() -> String:
+	var warn := ""
+	if not _unmatched.is_empty():
+		var names := []
+		for id in _unmatched:
+			names.append(str(_game_names.get(id, id)))
+		warn = ("The game has %d %s with no block here (%s), so %s the figures of "
+			+ "\"any other quad\" - see drones/status.txt. ") % [
+			_unmatched.size(), "drone" if _unmatched.size() == 1 else "drones", ", ".join(names),
+			"it takes" if _unmatched.size() == 1 else "they take"]
 	if _on and not _order.is_empty():
-		return "Changes take effect at once, except those marked restart; an added drone's weight, thrust, drag, camera and sound when the game next goes on from the pause menu."
-	return ""
+		return warn + "Changes take effect at once, except those marked restart; an added drone's weight, thrust, drag, camera and sound when the game next goes on from the pause menu."
+	return warn
 
 
 # The added drones' blocks, read again: those that still pass the checks
@@ -329,10 +341,83 @@ func _tell_changed(id: String) -> void:
 			m.call("zm_vehicle_changed", id)
 
 
+# The game's own drone list, read for its own sake. _prepare() reads it too,
+# from the copy it makes, but only when there are drones to add, so with
+# my_drones.cfg empty nothing here knew which drones the game has - and a
+# drone the game added since these settings were written went unnoticed.
+# Read before anything is mounted, so these are the game's own drones and
+# not the ones this mod adds after them. Quiet if the game's list is not
+# what this expects: it is read to say what is missing, not to add anything.
+func _read_game_drones() -> void:
+	if not _game_ids.is_empty():
+		return
+	var path := ""
+	for s in SCRIPTS:
+		if (s["needs"] as Dictionary).has("get_vehicles"):
+			path = "res://%s.gdc" % s["game"]
+	if path == "":
+		return
+	var script = load(path)
+	if not (script is Script):
+		return
+	var have := {}
+	for m in script.get_script_method_list():
+		have[m["name"]] = (m["args"] as Array).size()
+	if not have.has("get_vehicles") or have["get_vehicles"] != 0:
+		return
+	var list = script.get_vehicles()
+	if not (list is Array) or list.is_empty():
+		return
+	for v in list:
+		if not (v is Dictionary) or not v.has("id"):
+			continue
+		var id := str(v["id"])
+		_game_ids.append(id)
+		_game_names[id] = str(v.get("name", id))
+		if _game_keys.is_empty():
+			for part in ["adjustable_settings", "internal_settings"]:
+				if v.get(part) is Dictionary:
+					for k in (v[part] as Dictionary):
+						if _game_keys.size() < 30:
+							_game_keys.append("%s.%s" % [part, str(k)])
+
+
+# What each of the game's own drones flies with: its own block in
+# settings.cfg, or another drone's figures. A drone the game has added since
+# these settings were written has no block, and took [other]'s figures
+# without saying so before this.
 func _list_figures() -> void:
+	_unmatched.clear()
+	if _game_ids.is_empty():
+		# the game's list could not be read: the blocks are all there is to say
+		for id in SPECS.ids():
+			var d: Dictionary = SPECS.figures(id)
+			_say("%s: %s" % [d["name"], SPECS.describe(d)])
+		return
+	for id in _game_ids:
+		var d: Dictionary = SPECS.figures(id, _core)
+		var own: bool = str(d.get("base", "")) == id
+		if not own:
+			_unmatched.append(id)
+		_say("%s [%s]: %s%s" % [_game_names.get(id, id), id, SPECS.describe(d),
+			"" if own else "   <- no block of its own, so [%s]'s figures" % str(d.get("base", "other"))])
+	if not _unmatched.is_empty():
+		var names := []
+		for id in _unmatched:
+			names.append("%s [%s]" % [str(_game_names.get(id, id)), id])
+		var one := _unmatched.size() == 1
+		_say(("%s of the game's drones %s no block in drones/settings.cfg: %s. %s [other]'s "
+			+ "figures until one is added - a section named by the id in brackets, with its "
+			+ "props, frame and motors.") % ["One" if one else str(_unmatched.size()),
+			"has" if one else "have", ", ".join(names), "It takes" if one else "Each takes"])
+		if not _game_keys.is_empty():
+			_say("what the game itself keeps for a drone, to set a block from: %s" % ", ".join(_game_keys))
+	var spare := []
 	for id in SPECS.ids():
-		var d: Dictionary = SPECS.figures(id)
-		_say("%s: %s" % [d["name"], SPECS.describe(d)])
+		if id != "other" and not id in _game_ids:
+			spare.append(id)
+	if not spare.is_empty():
+		_say("blocks for drones the game does not have (no drone uses them): %s" % ", ".join(spare))
 
 
 func _game_dir() -> String:
@@ -562,6 +647,10 @@ func _prepare() -> bool:
 	if not (list is Array) or list.is_empty():
 		_say("nothing added: the game's drone list is not what this expects; an update of this mod is needed")
 		return false
+	# read again from the copy, which is the list the presets are built on
+	# (_read_game_drones may have taken them from the game's own script)
+	_game_ids.clear()
+	_game_names.clear()
 	for v in list:
 		if not (v is Dictionary) or not v.has("id") or not (v.get("adjustable_settings") is Dictionary) or not (v.get("internal_settings") is Dictionary):
 			_say("nothing added: the game's drone list is not what this expects; an update of this mod is needed")
