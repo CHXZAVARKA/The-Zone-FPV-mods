@@ -44,6 +44,10 @@ custom_maps/<name>/
     baked_<skybox>_<quality>/*.dds   # optional baked lightmaps
 ```
 
+(The release never reads that last folder for a custom map. The 2026 beta adds
+a different layout for maps the developer bakes - see
+[lighting v3](#the-2026-beta-lighting-v3-baked-by-the-developer-not-by-us).)
+
 ### manifest.json
 
 ```jsonc
@@ -59,7 +63,9 @@ custom_maps/<name>/
 ```
 
 Built-in skyboxes (`materials2_compiled/skybox/<name>_<4k|8k>.hdr`):
-`sunny`, `cloudy_sunny`, `dawn`, `sunset`, `industrial_sunset`.
+`sunny`, `cloudy_sunny`, `dawn`, `sunset`, `industrial_sunset` (the same five in
+the October 2026 beta; the `sunset_dark` its to-do list names is not in it
+yet).
 
 Placeable `custom_type` assets: `spray_can`, `rock`, `brick`, `wood_plank_big`,
 `lipo`, `propeller-cw`, `propeller-ccw`.
@@ -511,6 +517,14 @@ zonemap/vtf.py        VTF -> RGBA
 zonemap/materials.py  VMT -> glTF PBR (the hybrid path)
 zonemap/glb.py        dependency-free GLB writer
 zonemap/manifest.py   The Zone manifest.json
+zonemap/flatten.py    the spawn turn put into the map itself (no turned root node)
+zonemap/sky.py        the sky brushes kept as solid zone_sky surfaces
+zonemap/extras.py     for map_extras: the 3D skybox room (lit), teleports, prop doors
+zonemap/valvelight.py Valve's lightmaps read at any point (bake_glb, the 3D skybox)
+zonemap/mdlpose.py    a model's first-sequence pose, which it is drawn in
+zonemap/tjunc.py      T-junctions closed (the dotted seams)
+zonemap/pagelayout.py v3 light pages by location (so the game can cull them)
+zonemap/occluder.py   occluder.bin: what the game culls the map against
 zonemap/convert.py    orchestration
 zonemap/upak.py       Unreal .pak v10/v11 (Uncrashed)
 zonemap/uasset.py     cooked Unreal packages, tagged properties, DataTables
@@ -522,6 +536,12 @@ zonemap/ulevel.py     Unreal level -> static, instanced and spline meshes
 zonemap/ugeo.py       Unreal -> glTF transforms, indexed chunks, box UVs, decals
 zonemap/uncrashed.py  Uncrashed map -> glb + manifest
 tools/render.py       numpy software rasteriser for previewing output
+tools/flatten_glb.py  once, for maps forged with the turn on their root node
+tools/split_v3_pages.py  once, for v3 maps baked with a page over 256 materials
+tools/add_sky.py      once, for maps built before the sky brushes were kept
+tools/add_extras.py   once, for maps built before the 3D skybox, teleports and prop doors
+tools/relayout_v3.py  once, for v3 bakes whose pages span the whole map (no relighting)
+tools/pack_v3.py      packs a v3 bake folder into the game (--gpu: in seconds)
 ```
 
 ## Useful flags
@@ -1065,16 +1085,50 @@ level's meshes left out, its terrain kept) are the levers.
   `northyaw`. The bearing has not been checked in game; `--sun-offset` turns it.
 * Race gates are scenery; The Zone has no checkpoint asset.
 
-## Pitfall: .vvd vertices are already in model space
+## Pitfall: .vvd vertices are drawn in the first sequence's pose, not the bind pose
 
-Three inferno models (`elevatordoor`, `tv_monitor01`, `grainbasket01c`) lack the
-`$staticprop` flag and carry a bone 0 quaternion of `(.707, 0, 0, .707)` - a 90
-degree turn about X. It is tempting to apply that bind pose. **Do not.** The
-runtime skinning matrix is `boneToWorld * poseToBone`, and at rest those cancel
-to identity, so .vvd vertices are already in model space. Applying bone 0 turns
-a standing 104 x 2.4 x 116 unit door panel into one lying flat on the floor.
-`bind_matrices()` is kept in `mdl.py` for a future animated-model path but is
-deliberately not called.
+A .vvd holds a model's vertices as compiled; the game draws them through the bones,
+each moved by `boneToWorld * poseToBone`. poseToBone undoes the bind pose; boneToWorld
+is the pose the model is DRAWN in - its first sequence's first frame - not the bind
+pose. Where the two agree (nearly every model, and every `$staticprop`, whose bones
+are collapsed) the vertices are drawn where they are, and applying the bind pose alone
+is wrong: three inferno models (`elevatordoor`, `tv_monitor01`, `grainbasket01c`)
+carry a bone 0 of `(.707, 0, 0, .707)` whose idle frame is that same turn, so they
+stay put - apply the bind pose and a door panel lies flat on the floor.
+
+But where the idle frame is NOT the bind pose, the model is drawn turned. Doors and
+switches are often built a quarter turn from how their idle sequence stands them:
+gm_br_pitfalls has 54 such models - 22 office doors, its "pitfalls doors", the HL2
+`door01_left`, light switches, levers, a cargo elevator - and every one stood a quarter
+turn off, doors sticking straight out of their walls (a fake door's one-sided back then
+invisible but solid). `zonemap/mdlpose.py` reads sequence 0, blend 0, frame 0 - raw or
+RLE-compressed rotations and positions, in the .mdl or its .ani block - and skins the
+vertices with it. Checked against each model's hull: of pitfalls' 1,271 models, 43
+disagreed with their hull by a turn before, 2 after (both `$staticprop`, drawn as
+stored). The inferno three still match theirs.
+
+## Doors locked for good stay shut
+
+`--doors open` opens every `prop_door_rotating` except the ones the map keeps shut:
+locked from the start (spawnflag 2048), not starting open, and never unlocked or opened
+by its logic. Those are fake doors on walls - gm_br_pitfalls has 43, one pair on the
+wall of the spawn's yellow room - and opened they stood out of the wall with nothing
+behind them.
+
+## T-junctions are closed (`--no-tjunctions` leaves them)
+
+A T-junction is one face's corner sitting on another face's edge. The two sides are
+rasterised separately, and float rounding leaves pixel-wide gaps along the seam: a
+dotted line of whatever is behind (sky, void) along a wall's foot or a ceiling's edge.
+vbsp mends its own faces - their edge lists carry every corner that touches them - but
+the faces this converter makes (rebuilt hidden faces, displacements, cut blends, brush
+entities, the sky surfaces) were never mended against them or each other:
+gm_br_pitfalls' world had 21,622 corners on open edges, de_dust2's 2,760.
+`zonemap/tjunc.py` puts every such corner into the edge it lies on (within 0.1 mm, not
+at its ends) over the whole world at once, and cuts the triangle through it by clipping
+its sharpest corner off again and again (no corner added, no piece flat), normals and
+UVs carried over. de_dust2: 5,237 corners put in, 54 left on open edges (slivers in its
+displacements), the surface area unchanged to 0.02 m2 of 87,959, 8 s.
 
 ## Uploading strips the manifest - so the map is moved AND turned to the spawn (`--recenter`)
 
@@ -1104,9 +1158,21 @@ translated to (0, 10, 0) - identity basis, so the drone faces **-Z** - and
 the manifest's spawn rotation never reaches other players either
 (`menus/custom_map_upload.gd` sends the .glb's bytes and nothing else). So
 `--recenter` also **turns** the whole map about the vertical axis through
-the spawn, by minus the spawn's facing, as a rotation on the glTF's root
-node; the manifest's spawn rotation is then 0 and a local test starts exactly
-where an uploaded copy does. The manifest's `sky_rotation` turns by the same
+the spawn, by minus the spawn's facing; the manifest's spawn rotation is then
+0 and a local test starts exactly where an uploaded copy does.
+
+The turn is in the map itself, not on its root node (`zonemap/flatten.py`):
+world meshes have it in their vertices and keep no transform, props and
+other placed nodes have it in their own translation and rotation, and the
+root node has none. So the .glb is laid out as you fly it - open it in
+Blender and the spawn looks down -Z (Blender's +Y), the floor is level, a
+prop's rotation is its facing in the map, and something you add goes where
+you put it, with nothing to compensate for. `map_turn_deg` in the report is
+still the turn from the .bsp's own layout (bake_glb needs it to find the
+.bsp's light); `turn_in_geometry: true` says where it lives. A map forged
+before this has the turn on its root node: `python tools/flatten_glb.py
+<map>.glb` moves it in, once (every vertex is checked to stay where it was),
+and bake_glb does the same in memory for any it is given. The manifest's `sky_rotation` turns by the same
 angle so the sky keeps its place against the map offline (`map_turn_deg` in
 the report). The game's sun light itself is fixed, so which walls it lights
 changes with the turn, for everyone. Landslide Bando turns -105 degrees,
@@ -1114,166 +1180,118 @@ de_dust2 -165.
 
 **Re-upload after rebuilding**, since the coordinates move.
 
-## Baked lightmaps: supported by the shader, NOT wired up for custom maps
+## The sky brushes are kept (`--sky`)
 
-Worth recording so nobody repeats the investigation. Everything needed exists:
+A Source map is closed in by sky brushes: walls and a ceiling of `tools/toolsskybox`
+that the engine paints with the sky. They are what a player sees as sky, and they hide
+everything beyond them - the map's other areas and the outside of its own buildings.
+The Zone's sky is only a backdrop at infinity, so with them dropped, as every tool
+texture used to be, the whole map shows: from gm_br_pitfalls' neighbourhood its other
+levels hang in the sky overhead (206 sky faces there, 52,368 m2 of them round the map
+and 18,360 m2 round the 3D skybox room).
 
-* `materials2/custom_material.gdshader` declares
-  `uniform sampler2DArray shadow_maps[8]`, `instance uniform int
-  shadow_map_bucket`, `instance uniform float shadow_map_index`, samples with
-  `sample_shadow_map(UV2, ...)` and in `light()` does
-  `DIFFUSE_LIGHT = diffuse_light` - a bound lightmap fully replaces dynamic
-  diffuse.
-* Official maps name nodes `<10-letter-id>_zlms-<size>` and load
-  `<id>_zlms-<size>_comb.dds` (verified against 937 nodes of OG Bando), carry
-  lightmap UVs in `TEXCOORD_1` normalised 0-1 with ~0.7 % padding, and store
-  DX10 DDS at **DXGI format 95 = BC6H_UF16** with 8 mips. The folder's quality
-  percentage scales the named tier (a `_zlms-256` file in `baked_*_75/` is
-  192x192). HDR range measured 0 - 2.32.
-* The source data is free: de_inferno's BSP carries 345,428 luxels of Valve's
-  own bake across 10,663 faces, de_dust2 327,341.
+`--sky walls` (the default) keeps their faces as nodes named `zone_sky_<cell>`, one
+unshaded material in a plain sky blue, solid as in the original - the drone can't fly
+out of a sky box any more than a player could. The faces of the miniature 3D skybox
+room are dropped with it, at the same cut. With `--expand-3d-skybox` they are left out
+(`--sky none`), since the expanded skybox stands beyond them and would be hidden.
 
-**But the custom-map loader never looks.** Two probes, both negative: a map
-whose nodes are correctly named `_zlms-<size>` with valid `TEXCOORD_1`, and then
-the same map with four genuine BC6H lightmaps copied from an official map into
-both `custom_maps/<name>/baked_sunny_50/` and `baked_cloudy_sunny_50/` (matching
-the `texture_quality="50"` setting). Both loads reported `"shadow_maps": 0` with
-**no** `No shadowmap:` line and no attempt to open any `.dds` - while the same
-load did try `res://custom_maps/<name>/occluder.occ`, proving that folder is the
-base path. The node loop never runs, i.e. `load_asset` is called with
-`with_shadow_maps = false` for custom maps.
+The **map_extras** mod (zone-fpv-mods; it replaces map_sky) draws the sky on them. Where
+the map has no 3D skybox it is the game's own sky: for every pixel the sky's picture in
+the direction from the camera, turned and as bright as the background (in a render
+test, within 0.2 of 255 of the sky alone). Where it has one, it is that, as in Source -
+next section. Unshaded and casting no shadow either way. Without the mod they stay one
+plain colour, still hiding the rest of the map: a clear sky's blue, or - with a 3D
+skybox - what the room shows from sky_camera on average (1,200 rays from it, each the
+colour of the first thing it meets: a night map's sky comes out dark). bake_glb leaves
+them out of the light bake, out of a Cycles bake's occluders (they would block the
+sky's light) and out of a v3 bundle's materials (so the game leaves them the .glb's own
+unshaded material for the mod to replace).
 
-So this needs an engine change, not a converter change. The ask is small: pass
-`with_shadow_maps = true` and set `lightmap_base_path` to
-`custom_maps/<name>/baked_<skybox>_<quality>/`. Everything else on our side is
-already understood and only needs a BC6H encoder written (no library available -
-`imagecodecs.bcn_encode` is a stub, though `dds_decode` works and makes a good
-round-trip oracle).
+For a map built before this, `python tools/add_sky.py <map.glb or map folder> --bsp
+<map.bsp or .gma> [--map NAME] [--report convert_report.json]` adds them where the map
+has them, without converting or baking again; on an installed map it updates
+download.json too. `tools/add_extras.py` (below) brings the rest.
 
-Until that happens, `--bake-lightmaps` (next section) gets the same lighting in
-through the albedo instead.
+## The 3D skybox is kept, lit with the map's own light, for map_extras
 
-## Baking the lightmap in anyway (`--bake-lightmaps`)
+A Source map's sky is drawn through its sky brushes as a scene of its own: the 3D
+skybox, a small room built off to the side (scale 16 as a rule) seen from
+`sky_camera + eye / 16`. That is where a map's skyline, hills and night come from -
+gm_br_pitfalls' red-lit neighbourhood ("Red Skyway") is a black room with a
+starfield and skyscrapers, while its 2D sky (`sky_day01_09`) is day. With sky walls
+the room is no longer dropped: its brushwork and props stay where they are, as nodes
+named `zone_3dsky_<...>`, and an empty node `zone_3dsky` holds, in the map's own space,
+where `sky_camera` is, where the map's origin is, the scale and how the light is held.
+map_extras draws the room with a camera of its own from where the eye would be in it,
+into a screen-sized HDR picture, and the sky surfaces show that picture pixel for pixel
+- in a render test, the same picture as the room built 16x bigger round the camera,
+within 0.1 of 255 on average. It is drawn only while some sky surface is on screen.
 
-The section above is why the map's own lighting cannot be a texture the game
-looks up: there is one UV, and the only slot that takes a second one is the
-shadow-map path the custom-map loader never switches on. Re-read out of
-`thezone.pck`, `materials2/custom_material/custom_material.gdshader` is
-unambiguous:
+The room is never baked (bake_glb passes it through, and keeps it out of the occluders
+and the bundle's materials), so it carries its light with it: Valve's own, read off the
+lightmaps vrad baked for it (`zonemap/valvelight.py`, the same reader bake_glb sets the
+Cycles bake against) at every vertex, its brushwork cut finer first (24 units, or
+coarser to stay under 60,000 triangles - de_dust2's desert came to 59 units). Each prop gets
+the light where it stands. The colour goes into COLOR_0 as sRGB of half the light (1 =
+the albedo as it is, Source's overbright reaching 2): Godot keeps vertex colours to 8
+bits, and a night sky in 8 linear bits bands. The room's materials are unshaded copies
+(`zone_3dsky_src_...`). gm_br_pitfalls: 2,827 triangles cut to 46,041 in 8 s, 100 % read
+straight off its lightmaps; de_dust2: 89 %, the rest from the nearest lit face.
 
-    ALBEDO      = texture(albedo_texture, UV).rgb
-    NORMAL_MAP  = texture(normal_texture, UV).rgb
-    ROUGHNESS   = texture(roughness_texture, UV).r
-    if (shadow_map_index >= 0.0)  { ... sample_shadow_map(UV2, ...) }
+## Teleports are kept, for map_extras
 
-No AO texture, no vertex colour, no second coordinate. (Note `UV` raw - an
-older copy of this shader still inside the pck divides by a
-`texture_size_meters` uniform. That one is not the material the loader builds.)
+Many maps join their areas with `trigger_teleport` brushes, and some areas can be
+reached no other way: gm_br_pitfalls is a hub of pits, each dropping you into one of
+its levels (40 teleports). Each becomes an empty node `zone_teleport_<n>` (nothing to
+draw or collide with) whose extras hold, in the map's own space, the trigger's planes
+(its brush, or the hull's faces that have all of it behind them, and its box), its
+corners, the destination and the way it faces, the landmark if it has one, and whether
+the map starts it switched off (`StartDisabled`) or switches it with its logic.
 
-So the light has to be multiplied into the albedo, and the moment it is, a
-tiled texture will not do: every lit face needs its own patch of texture.
-`--bake-lightmaps` gives it one.
+map_extras tests the quad's path each physics tick (240 a second: a 4 cm trigger is
+not skipped at 40 m/s) against them, and moves it through the first it crosses. With a
+landmark, by the landmark's offset, as Source does. Without, to the destination turned
+about the vertical to face its way - as Source turns the player - and attitude, speed
+and spin turned with it, so the quad flies on exactly as it was relative to itself (in
+the physics test: velocity and spin in its own frame unchanged, 40 m/s along -Z out as
+40 m/s along +X, the roll spin turned with it). gm_br_pitfalls' destinations are at the
+top of shafts in its levels' ceilings, so a dive into a pit is a dive out of the
+ceiling. It is not a respawn to the other mods: battery, prop wear and OSD stats carry
+on (the quad's `zm_teleports` count goes up, which they read).
 
-### What it costs, and why adaptive density
+## Prop doors open, animated doors left out
 
-Valve's bake is cheap - `gm_br_pitfalls` is 4.1 M luxels over 459,323 m2, one
-luxel per 33 cm, small enough to fit in a single 2048 page. The albedo is what
-costs, because an atlas stores every square metre exactly once while a tiled
-512 px material gets to repeat:
+`--doors open` now opens `prop_door_rotating` too (gm_br_pitfalls has 125: office
+doors, closets, cabinets, its "pitfalls doors"): turned about the model's origin - the
+hinge - by `distance`, the way `opendir` / `spawnpos` allow (`extras.door_yaw`). A
+`prop_dynamic` the map's logic animates open (`SetAnimation` with "open" in it: a blast
+shield, a server hatch) cannot be animated here, so it is left out, which opens the way
+it closed.
 
-    flat  5 cm/texel   183.7 M texels
-    flat 10 cm/texel    45.9 M texels
-    adaptive            85.8 M texels over 31 pages, small faces still sharp
+## Bringing an older map up to date: `tools/add_extras.py`
 
-The default is `texel = clip(sqrt(face_area) / 48, 3 cm, 30 cm)`: a 1 m2
-doorframe gets 3 cm texels, a 400 m2 warehouse wall gets 30 cm, and since the
-big faces hold most of a map's area that is where the saving is.
-`--bake-texel CM` forces a flat density instead. For scale, the same map's 279
-tiled world materials already spend 73 M texels.
+```
+python tools/add_extras.py build  <map.gma|.bsp> <convert_report.json> <work>
+python tools/add_extras.py doors  <map.gma|.bsp> <convert_report.json> <work>
+python tools/add_extras.py patch  <work> <v3 map.glb> [...]
+python tools/add_extras.py undo   <v3 map.glb>
+```
 
-de_aztec: 5,610 faces, 13.2 M texels, 5 pages, 6.8 s, +6.6 MB of glb.
-
-### What is baked
-
-Worldspawn brush faces with a lightmap and an opaque material. Left on the
-tiled path: displacements, cut-out and translucent sheets (they need their
-alpha), water, `WorldVertexTransition` blends, brush entities (they move), and
-every face `--fill` rebuilds - vbsp deleted those, so Valve never lit them and
-there are no luxels to read. Static props keep dynamic lighting; Source stores
-their lighting per-vertex in a separate lump, and the game has nowhere to put
-it.
-
-### Four things that bit
-
-* **Bumped faces store FOUR lightmaps per style** (`SURF_BUMPLIGHT`). The
-  first is the non-directional one and the only one wanted.
-* **`lm_size` is an extent, not a count** - the sample grid is `(w+1, h+1)`.
-* **The mip footprint is already in texture pixels.** `tex_vecs` map world
-  units straight to texels, so multiplying the footprint by the texture width
-  again pins every face to the 1x1 mip: the first render came out as flat
-  average-coloured rectangles.
-* **Shelf-pack in map order and the page count triples.** Packing faces purely
-  by position gave de_aztec 16 pages at 20 % full; sorting purely by height
-  fills pages but scatters one 48 m cell across every page, and the world mesh
-  count becomes cells x pages. Faces are cut into runs worth about one page
-  (keeping locality) and only sorted tallest-first inside a run: 5 pages, 63 %.
-
-### Exposure, and not lighting the map twice
-
-Lightmap samples are `ColorRGBExp32`, linear light, `rgb * 2^exponent`.
-de_aztec's spread is p25 = 5, p50 = 20, p90 = 208, p98 = 346 - sunlight sits
-on a plateau around 350 and half the map is in shadow, so the 98th percentile
-is what becomes 1.0 (`--bake-exposure` overrides; the factor is reported as
-`light_scale`). The product is formed in linear light and re-encoded to sRGB,
-since multiplying an sRGB albedo by linear light darkens everything. Nothing
-is allowed below `LIGHT_FLOOR` (0.04), or a shadowed corner would be pure
-black no matter what the game's lights do.
-
-A `$color` gain above 1 is put back here. Dropping it is right for an unlit
-map and wrong for a baked one - the mapper added it *because* the lightmap was
-about to darken the surface.
-
-The map still gets the game's dynamic sun on top of the bake, which would
-light it twice, so `--energy` defaults to **0.45** when baking instead of 1.0.
-Baked pages also ship a flat normal map: with the lighting already in the
-albedo a per-texel normal only feeds the specular lobe, and baking a normal
-atlas as well would double the texture budget.
-
-## Brush entities are MODEL-LOCAL (the biggest bug in this converter's history)
-
-vbsp recentres a brush entity's geometry around its `origin` when it has one,
-so `VERTEXES` for that model are **model-local** and the entity's `origin` key
-is where they belong. Entities without an origin brush keep world coordinates.
-There is no flag saying which - compare the model's face-vertex bbox centre to
-the origin: a door leaf whose faces centre on `[0, 22, 0]` while its origin is
-`[240, -1025, -715]` is obviously local.
-
-Getting this wrong piles every affected brush entity at the world origin:
-**74 of 92 on de_nuke, 21 of 33 on de_inferno, 8 of 15 on de_dust2.**
-
-It produced three symptoms that look unrelated:
-
-1. Objects **missing** from where they belong (doors, breakables, illusionary
-   geometry) - they are all stacked at the origin.
-2. Those same objects **still collidable in the right place**, because the
-   `BRUSHES`/`BRUSHSIDES` lump stores planes in WORLD space, so the nodraw
-   fill rebuilt them correctly while their faces went to the origin. "Missing
-   but you can collide with it" is the signature of this bug.
-3. After `--recenter`, the pile lands on the spawn.
-
-An earlier version of this converter concluded from de_inferno that the origin
-was "a pivot, not an offset" because applying it appeared to make a roof float.
-That was wrong, and the wrong conclusion was written down and believed for a
-long time. Derive it per model.
-
-### Consequences for the nodraw fill
-
-Because brush-entity brushes ARE in the world-space `BRUSHES` lump, the fill
-would double-generate them. `extract()` therefore passes exclusion volumes -
-but only for entities whose geometry it actually places. Excluding volumes for
-entities it skips is catastrophic: de_dust2's seven `trigger_soundscape`
-brushes total **337,000 m3** (one is 134 x 50 x 25 m) and wiped out 782 of
-1357 legitimate world fills before that was caught.
+For a map forged and baked before the above, without forging or baking again. `build`
+makes the 3D skybox room (lit), the teleports and the anchor in the map's own space
+(from the report's `origin_shift` and `map_turn_deg`; only the room's faces and props
+are read, so it takes seconds). `doors` finds each prop door where the bake has it,
+shut, how it turns open, and every prop an older forge drew in the wrong pose and where
+it goes (above). `patch` changes a v3 map.glb in place: the doors'
+triangles in the light pages turned open (matched to the millimetre; the
+animated props folded to nothing), the room, teleports and anchor added, the sky
+surfaces' plain colour set. Only the bytes that change are written - the doors'
+vertices, the JSON (kept the same length: leftover empty nodes go to make room), what
+is added at the end - with the originals saved first for `undo`: seconds for a 1 GB map
+on a slow disk. A door keeps the light it was baked with while shut, and the room
+beyond it the light it had with the door shut; a full forge and bake lights them open.
+gm_br_pitfalls: 125 doors and 6 animated props, 202,470 triangles, both copies (installed and bake folder) in under a minute.
 
 ## Doors (`--doors`)
 
@@ -1720,11 +1738,12 @@ vbsp makes it so - which makes the exact answer cheap: Sutherland-Hodgman
 clip, shoelace area, and a real covered *fraction*.
 
 * 90 % or more already drawn -> do not rebuild the side at all.
-* anything above 2 % -> rebuild it, but sink it 0.25 units (6.4 mm) along its
-  normal so the real face wins the depth test everywhere they meet. Rebuilt
-  faces also test against each other, and each additional skin sinks one step
-  deeper, or two fills that were both sunk behind the same drawn face would
-  end up level with each other again.
+* anything less -> rebuild it, **cut around** the faces already drawn on its
+  plane (see "White seams" below). Rebuilt faces also test against each
+  other, and a later one is cut around an earlier one the same way.
+* Only a side overlapping something drawn *off* its plane - a displacement,
+  glass, the sky - is still sunk 0.25 units (6.4 mm) along its normal, the
+  old rule for every case: 2 sides on gm_br_pitfalls, 3 on de_nuke.
 
 The candidate lookup is bucketed by `(dominant axis, sign, distance / 4
 units)` and rejected by bounding box, not by centroid radius - two 30 m2 fills
@@ -1745,6 +1764,106 @@ in, and they z-fight in Garry's Mod too.
 
 de_nuke's fills go 3,037 -> 3,035 and its 1,783 void-culled rebuilds are
 untouched, so nothing the fill exists for was lost.
+
+### White seams: sinking made a slit at every edge
+
+Sinking a partly-covered side 6.4 mm moved its *edges* too. Wherever such an
+edge met a wall, a ceiling or the next face, there was now a 6.4 mm slit
+between them, looking into the brush and out the far side to the sky: a
+bright, often dotted line along the seam, worst in the backrooms where the
+wallpaper and ceiling brushes are nodraw on one side. It showed up exactly in
+the open-edge gaps of the forged map - pairs of parallel open edges, measured
+by how far apart they are:
+
+| gap (Source units) | gm_br_pitfalls before | after | de_nuke before | after |
+|---|---|---|---|---|
+| 0.24-0.26 (one sunk side) | **2,015 m** | 1.5 m | 969 m | 553 m* |
+| 0.34-0.37 (two, at a corner) | 249 m | 19 m | 67 m | 0 |
+| 0.48-0.52 (two deep) | 408 m | 110 m | 160 m | 0 |
+| 0.001-0.01 (hairline) | 537 m | 293 m | 234 m | 28 m |
+
+\* de_nuke's remaining 0.25 gaps are a handful of sides along the map's outer
+edge sunk behind the sky, where a slit shows the sky next to the sky.
+
+So a side is now cut instead (`nodraw.cut_out`): it minus the convex faces
+on its plane (within 0.05 units), each removed by walking its edges - what is
+outside edge k is a piece, what is inside goes on to edge k+1, what is inside
+all of them is the overlap and is dropped. The pieces are convex, stay on the
+plane, and meet their neighbours exactly; the cuts end on the drawn face's
+own corners, which the T-junction pass then stitches. 2,420 sides cut on
+gm_br_pitfalls, 11,853 fills -> 12,155 pieces.
+
+Three things had to be right for that to be safe, because a cut leaves a
+hole where a sink only hid something:
+
+* **A face is cut around only where it is drawn.** Each drawn face is tagged:
+  `cut` (world faces, and brush entities we place - indexed where extract()
+  draws them, with their transform, an opened door's swing and any carrier
+  applied, not at their stored vertices, which for an origin-brush entity sit
+  about the world origin); `sink` (displacements, glass/additive faces, sky);
+  `none` (tool faces, removed breakables, invisible entities - nothing is
+  drawn there, so nothing is done).
+* **`_ccw` decides winding by signed area.** It used the first three corners,
+  and vbsp leaves extra corners along face edges, so a loop that *starts*
+  with three collinear ones read as counter-clockwise either way, and a
+  clockwise face clipped to nothing: invisible to the coverage test. World
+  face 21600 (carpet, 1696..1824 x -4096..-3904) had a whole rebuilt side
+  drawn over it, hidden only because the side was sunk for another reason.
+* **Rebuilt corners snap to the BSP vertex they are** (within 0.02 units):
+  brush polygons are rebuilt from planes and rounded to 0.01 units, vbsp's own
+  vertices are float32 from its own clipping, and on angled brushes the two
+  differ by up to 0.005 units - the hairline row above. 1,787 corners.
+
+Coplanar overlapping area (triangle centroids inside another coplanar
+triangle, within 2 mm; the sunk sides were not counted before, being 6.4 mm
+off): gm_br_pitfalls 306 -> 131 m2, de_nuke 55 -> 0.7 m2. Every triangle of
+the old world checked against the new: 0.08 m2 of slivers not covered, so
+no holes.
+
+## Never-solid brushes are flown through (`--solid-fake-brushes` makes them solid)
+
+Source draws some brush entities that nothing collides with: `func_illusionary`,
+and `func_brush` with `Solidity` "never solid". The game makes every mesh of a
+map solid, so drawn as ordinary world they turned into walls nobody in Source
+ever bumped into. gm_br_pitfalls uses them for its tricks - 14 textured ones:
+the white-glow plane standing in the control-room doorway and windows
+(`brush_AreaPortalControlroom`, a bright "portal" you walk through), fake walls
+and fake floors (the pitfalls), a curtain, plates and planks. (Its nine black
+`brush_AreaPortal*` planes are `tools/toolsblack` and were never drawn.)
+
+They are now chunked apart (`build.never_solid`), written as `zone_nosolid_...`
+nodes, and each gets a sibling `<name>-collider`: one 2 cm triangle. That is
+the game's own convention - `z_asset_loader.handle_manual_colliders` takes a
+node `X-collider` as X's collision shape, hides it, and frees the shape it
+built from X - so X is drawn and has nothing to hit. (Smaller than 2 cm and
+Jolt drops the triangle as degenerate, printing an error for every node.)
+`bake_glb --zone-v3` keeps them apart on each light page as `lmNNNn_zlms-N`
+nodes sharing the page's lightmap, with their own `-collider`.
+
+A never-solid brush that a player clip fills (over half its area inside a
+`CONTENTS_PLAYERCLIP` brush) stays solid: in Source the clip stopped the
+player there, and the forge draws no clips, so passing through would open a
+hole Source never had. 1 of cs_office's 5, 1 of cs_italy's 41, 4 of
+de_piranesi's 77; none of gm_br_pitfalls'.
+
+Checked in Godot 4.7.2 with Jolt, loading the baked cs_office through the
+loader's collider steps: 0 of 18 rays through the never-solid surfaces hit
+them, 48 of 48 through ordinary walls did. `tools/relayout_v3.py` does not
+carry `lmNNNn` nodes yet and refuses such a map: bake it again instead.
+
+## Doors that swing about a horizontal axis
+
+A `func_door_rotating` opens about its own yaw by default, about its own X
+with "X Axis" (spawnflag 64) and its own Y with "Y Axis" (128): Source adds
+the distance to the entity's roll, pitch or yaw (CBaseToggle::AxisDir,
+CRotDoor::Spawn), so the axis turns with the entity's `angles`. The forge
+swung X-axis doors about the vertical and Y-axis ones about the world X, so a
+lid or flap facing any other way turned in its own plane and stayed shut.
+`brush_entity_transform` now composes the opened angles with the closed ones
+the way Source does; ordinary yaw doors come out exactly as before. On
+gm_br_pitfalls that moves 20 movers: the server hatches, two dumpster lids,
+the apartment's kitchen cabinet doors (and the door models parented to them)
+and the bookcase flap.
 
 ## Zero-area triangles: 7 % of every map
 
@@ -2446,6 +2565,202 @@ of it to survive the albedo-only shader — flat normals, flat gain, the gamma
 lift, sky-rotation hacks, normal blending — is compensation that gets deleted
 the day the flag flips. Improve the light solution; treat the albedo composite
 as an export step.
+
+## A map made in Blender, as a real lighting v3 bundle (`tools/zone_bake.py`, `tools/pack_zone_map.py`)
+
+For maps modelled in Blender rather than converted. The light is baked in Blender
+with Cycles and packed into the folder the 2026 beta loads with real lightmaps: the
+same format as the server's baked bundles and Plaza
+([the format](#the-2026-beta-lighting-v3-baked-by-the-developer-not-by-us)), with the
+official maps' camera, bloom and auto exposure. It is a local folder: it works for
+whoever puts it in `custom_maps/`, e.g. downloaded from GitHub, with "Legacy
+lighting" unticked. Other players see whatever the server has for that map.
+
+Everything runs on your PC, from one script:
+
+1. **Once:** a Godot 4.4+ editor .exe (godotengine.org; the script finds
+   `Godot_v4.*_win64*_console.exe` in Downloads, or set `GODOT_EXE`). The game folder is
+   found in Steam's usual place, or set `GAME_DIR`.
+2. **Each map:** File > Open the map's .blend, then Scripting tab > Text > Open >
+   `tools/zone_bake.py` > Run Script. Window > Toggle System Console shows progress;
+   Blender stops responding until it is done. Or without the window:
+
+       blender.exe -b "my map.blend" --python tools\zone_bake.py
+
+   It bakes with Cycles on the GPU, denoises each lightmap with Blender's own denoiser
+   (OpenImageDenoise, through the compositor - no Python packages), writes `zone_bake/`
+   beside the .blend, then runs Godot on `zone_bake/pack_zone_map.gd` (written out by the
+   script, also in `tools/`) to pack and install `<game>/custom_maps/<MAP_NAME>`. To pack
+   again without baking, double-click `zone_bake/pack.bat`.
+
+The settings are at the top of the script: `MAP_NAME`, `DENSITY` (texels per metre),
+`SAMPLES`, `MAX_SIZE`, the sky the game shows (`SKYBOX`, one of the game's own:
+cloudy_sunny, sunny, dawn, sunset, industrial_sunset), and glass/water
+(`SEE_THROUGH_ALPHA`, `SEE_THROUGH_TINT`, `SEE_THROUGH_SOLID`). The poolrooms bake took
+10 minutes on two RTX 3070 Tis at the defaults.
+
+### What the bake script changes, and why
+
+* **Arrays become one object per copy**, each with its own lightmap (a 750 m array
+  would not fit one). Heavy meshes are decimated (`COLUMN_TRIS`, default 4000 a copy):
+  the poolrooms column was 190k triangles a copy, 9.5 M in all.
+* **Single-layer meshes become two-sided.** Blender draws both sides of a face; the
+  game draws only the front, and Cycles bakes only the front. The poolrooms hall is a
+  scaled cube with its normals pointing *out*: shown as it is, the game culls every
+  wall from inside. Turning faces by guessing which side is "inside" (rays escaping
+  to the sky from one side and not the other) failed on the skylight shafts, where
+  both sides see sky. So an open mesh gets a turned-round copy of every face 2 mm
+  behind it, each side with its own lightmap. A closed mesh just gets its normals
+  pointing out. Meshes over `TWO_SIDED_MAX_FACES` are left alone.
+* **Materials** become the game's: the bundle's materials replace the .glb's by name,
+  so each gets a `zone_` name that cannot match one of the game's library materials
+  (it matches those by *substring*, so a material called "Glass" or "Material.001"
+  would be swapped for the game's own). Image textures carry over; a Brick Texture
+  becomes a seamless 16 x 16 brick image with the UVs scaled to match; other
+  procedural colours become flat colours; glass and transparent shaders become
+  see-through, with a `-collider` stand-in 1 km below so they have no collision.
+* **Instances are baked too** - geometry-nodes output (UberCeiling's grid, tiles and
+  troffers: 4,980 instances, 13 M triangles), collection instances and particles. The
+  depsgraph's instance list is what renders, so it is read directly; each shape is
+  decimated to an equal share of `INSTANCE_TRIS` (a shape with thousands of copies gets
+  few triangles, a handful of lamps keep their detail; parts made of many separate pieces
+  that will not collapse become a simplified convex hull), then merged into one
+  lightmapped piece per `INSTANCE_CELL` (8 m). Copying an instance needs its evaluated
+  mesh data: `new_from_object` on the instance rebuilds the *instancer* instead.
+* **Only what renders**: an object counts only if it and its collections render (the
+  UberCeiling templates sit in a collection hidden from renders and used to be baked at
+  the origin). Hidden-in-viewport objects and modifiers that render are switched on first.
+* **Node groups are read through**: emission, images and colours inside groups (and
+  values set on the group node) are found. Emission keeps lighting the bake and glows in
+  the game (`emission_color`, `emission_energy`).
+* **See-through faces are split off** into their own `_clear` piece, so a lamp's lens or a
+  window doesn't make the whole object vanish from the light and the collision.
+* **Spawn**: an empty with "spawn" in its name, facing along its Y arrow; else the camera.
+* **Light portals** go in every horizontal opening with nothing above it, so sky
+  light through skylights converges instead of being found by chance.
+* **The bake is DIFFUSE, direct + indirect, without colour**: light, not albedo x
+  light, in Blender's units, which are the game's (1.0 = 10,000 cd/m2, see
+  `light_rolloff.gdshaderinc`). For the bake every material is matte with its real
+  colour, so bounce light has the right tint and metals still receive light (the
+  lightmapped shader ignores metallic).
+* **One Cycles run per lightmap.** Selecting several objects does not share the scene
+  setup: Blender bakes them one after another anyway.
+
+### What the packer checks against the game
+
+`ZMapBundle.lightmap_image` refuses anything but `FORMAT_BPTC_RGBFU` at exactly
+`<_zlms size> x lightmap_scale`, and `read_entry` refuses an entry whose length minus
+the image data is not a 128 or 148-byte DDS header, so the packer compresses with
+Godot itself (BC6H unsigned with the full mip chain, as Plaza's are, and BC7 for
+textures) and writes the DDS headers itself, since Godot 4.4 has no
+`save_dds_to_buffer`. Godot 4.4.1 and 4.5.2 both pass the check below. `download.json` lists the files of
+every tier, `occluder.bin` included, because `downloaded_qualities` only counts a
+tier with all its shared files listed.
+
+A Godot check that loads the folder through a transcription of the beta's
+`ZMapBundle` and its bundle path in `ZAssetLoader` (materials by name, `-collider`,
+lightmaps into the eight `Texture2DArray` buckets) found all 77 poolrooms lightmaps
+and materials, at every tier.
+
+## Source maps as real lightmaps (`tools/bake_glb.py --zone-v3`)
+
+The same map folder `zone_bake.py` makes for Blender maps, from a converted Source
+map: the map keeps its own tiled textures at full sharpness, and the light goes into
+HDR lightmaps (BC6H) that the beta shows with the official maps' camera. No light in
+the albedo, no flat-normal or gain tricks, no dynamic sun lighting it twice.
+
+    python forge.py <map.bsp or .gma> ...            # WITHOUT --bake-lightmaps
+    python tools/bake_glb.py out/<map>/<map>.glb --bsp <map.bsp> --zone-v3 --install
+    python tools/bake_glb.py out/<map>/<map>.glb --bsp <map.bsp> --zone-v3 --cycles --install
+
+The first takes Valve's own light from the .bsp (minutes, the original look); with
+`--cycles` the map's lights are rebuilt in Blender and path-traced (soft shadows, bounce
+light; a long bake). `--install` packs it with Godot 4.4+ (found in Downloads, or
+`--godot <exe>`) into `custom_maps/<map>_v3`. Without it, the folder `<map>_v3_zone_v3/`
+beside the .glb holds everything and prints the Godot command.
+
+How it maps onto the bundle format: each atlas page becomes one node,
+`lm<page>_zlms-<page px>`, holding every triangle charted onto that page with its own
+material and UV2 into the page - one lightmap per node, as the game wants. Light is
+written in the game's units: Source's "fully lit" (128) is 1.0 times `--brightness`,
+which defaults to 0.4 here so sunlight lands near 2, where the official maps have it
+(the shader's roll-off knee is at 2). Defaults change to `--texel 10 --budget 64`: the
+textures no longer ride in the atlas, so the light can be as coarse as Valve's own
+(~33 cm a luxel on gm_br_pitfalls). Foliage is baked too.
+
+**Turned maps.** `forge.py --recenter` turns the whole map about the spawn
+(`map_turn_deg` in the report: 90 on gm_br_pitfalls), and the .bsp is not turned. The
+lookups have to go back through that turn as well as the shift and the scale: before
+they did, every light lookup missed, and gm_br_pitfalls baked at 0.6 % exact, the rest
+from the coarse 128-unit grid, which is light coming through walls at every seam (a
+turned copy of de_cpl_strike: 66.9 % exact, against 66.8 % unturned). The turn is
+read from the report with the shift (`--turn` overrides it, as `--shift` does the
+shift), and the map itself is already turned - forge.py puts the turn into the
+geometry - so there is no root node to undo. If a bake reports a low exact percentage,
+the report not matching the .glb is the first thing to suspect.
+
+**Small triangles.** A triangle that covers no texel centre - anything under a texel
+across, or a thin sliver - used to get no light at all and showed black in the game:
+25.7 % of de_cpl_strike's triangles and 30 % of gm_br_pitfalls' (most door slabs,
+skirting boards, every high-poly prop). Each one now gets the texel under its centre,
+and every page's empty texels take their neighbours' light, so the packer's halving
+for the lower tiers and the GPU's mips don't pull black into the chart edges. Each chart
+has `--pad` texels of its own edge round it (3; it was 2): the game halves the pages at
+medium texture quality (50) and quarters them at low, so a 2-texel gutter is 1 at medium
+and half a texel at low, and the neighbouring chart's light creeps onto the edges - more
+so with distance as the GPU mips them. 3 cost de_dust2 no pages. The bake
+prints the share left on unbaked texels; it should be 0.0 %.
+
+**Pages by location, and occluders.** The game draws a v3 map as one node per light page,
+and Godot culls whole nodes - out of view, or hidden behind the map's occluders, which
+the game reads from `occluder.bin` (custom_map_root.gd `load_occluder`, the format in
+gdutil/z_occluder_bin.gd; occlusion culling is on in the game's project and its 3D view).
+Packed by size alone, every page held charts from all over the map: gm_br_pitfalls' 32
+pages each spanned a median 448 x 173 x 642 m of a 536 x 225 x 652 m map, so nothing was
+ever culled - every frame drew all 7.5 M triangles in ~5,000 draw calls - and
+occluder.bin was written empty. Now the charts are grouped by location first
+(`zonemap/pagelayout.py`: the map split along its longest side, in proportion to the
+pages each side needs, until a group fills at most 88 % of a page and has at most 256
+materials - split at the median instead, a map needing just over 4 pages came out as 8
+at 35 % full: de_dust2 after its T-junctions were closed; 5 at 57 % now) and each group is
+packed on its own with a skyline packer, which fits 90 % of a page where the old shelf
+packer managed about half. pitfalls' pages now span a median 115 x 109 x 135 m, still 32
+of them. occluder.bin holds the world's big solid surfaces - opaque, not props, at least
+0.25 m2, at most 300,000 triangles - and the sky surfaces (94,490 triangles on pitfalls).
+On de_dust2, small and open with 4 pages, the renderer's own counts from 20 views: 320
+draw calls and 98,066 triangles a frame before, every view; 225 and 72,075 on average
+after, down to 84 and 25,766. `--no-spatial` packs by size as before.
+
+`tools/relayout_v3.py <bake folder>` does this to a bake made before, without lighting
+it again: it finds the charts on the old pages from the triangles' light UVs (each chart
+is a patch of texels with gutters round it), groups them by location, copies each one's
+light texel for texel - with its padding - onto the new pages, moves the UVs by the same
+whole texels, and writes the occluders from the forge's .glb. On pitfalls (1.9 M charts)
+the light at 300,000 sampled triangles came out the same to 0.06 % (half floats), bar
+136 slivers, 131 of them under 1 cm2. It keeps the old files as `*_before_relayout`
+and sets `reuse_textures` in bake_info.json, which tells pack_zone_map.gd to keep the
+installed map's texture blobs, so only the light is packed again:
+`python tools/pack_v3.py <bake folder>`. Packing the light is Godot's BC6H compressor,
+on the CPU when headless (about two minutes a 2048 page on two slow cores); `--gpu`
+runs Godot with a window so it uses the graphics card: seconds, with the light about
+1 % off on average against 0.2 % (de_dust2).
+
+**256 materials a node.** Godot gives a mesh at most 256 surfaces, one per material,
+and drops the rest as it loads the .glb - nothing on screen, just a line in the game's
+log for each (`Condition "surfaces.size() == RenderingServerEnums::MAX_MESH_SURFACES" is
+true`). A light page used to be one node with a surface for every material charted onto
+it, and seven of gm_br_pitfalls' pages had 264 to 582: 1,435 materials' triangles never
+appeared, door slabs among them (their knobs and glass, on other pages, still did -
+which looked like a texture not loading, and no rebake could change it). A page over
+256 materials is now several nodes, `lm009_zlms-2048`, `lm009s1_zlms-2048`, ...,
+sharing the page's lightmap (`"lightmap"` on the extra objects in bake_info.json;
+pack_zone_map.gd stores the image once and points every node at it). For a map baked
+before: `python tools/split_v3_pages.py <bake folder or installed map folder>` does the
+same without baking again - on an installed map it updates the lightmap index and
+download.json too, so no packing is needed. If a map shows that log line, this is it.
+
+Measured on de_cpl_strike: 90,070 charts on 8 pages of 2048, 8.6 minutes for the light
+(2 cores), 254 materials and 185 textures carried over as they are.
 
 ## Performance notes
 

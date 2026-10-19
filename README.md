@@ -41,21 +41,16 @@ Each motor gets its own torque rather than them all getting idealized torque. De
 
 OSD simulation, with features from Betaflight, BrainFPV, Quicksilver, and iNav. Replaces a few in-game UI elements and integrates them into OSD, like ARMED message, Turtle Mode/Crash flip, and gets rid of "press r to reset" message on ground touch. Custom crosshair support, horizon lines, custom layouts and font support, and more. Compatible with battery_sag mod to show battery life.
 
-What it does:
-When your controller is initially connected, or reconnected, it will set your throttle to 0%. Since you have to be at 0 throttle to ARM the drone, your throttle will usually be all the way down. However, the game starts with 50% throttle, so you have to wiggle the gimbal to re-register what the true position is. This mod sets your throttle to 0 between your controller initialization and its first input.
-
-
-How it works:
-It works out which end is "down" from your controller setup, so an inverted throttle, custom end points or a centre offset are handled. 
-If you reconnect the radio mid-session, it does this again.
-A gamepad set up so the resting stick already means zero throttle is left alone.
-
 ## Mod settings
 
 lets you edit settings in-game (adds a Mods button to pause menu, or overlay with F9 key by default)
 
 ![Mod settings](modsettings1.png)
 ![Mod settings](modsettings2.png)
+
+## mode_3d
+
+3D mode: motors that turn both ways, as on a quad flown with Betaflight's 3D feature and bidirectional ESCs. Below mid throttle the motors stop, start again backwards and push the other way, so the quad can hang upside down, fly inverted and flip back over without turtle mode. Works with gamepads (half-range throttle is detected). Off until you turn it on.
 
 ## pilot_audio
 
@@ -77,6 +72,15 @@ simulates rotor drag. Configurable options per drone. Force grows with the speed
 
 ## throttle fix
 Throttle Fix addresses the issue with the game initializing the throttle in the middle position until you move your throttle some amount.
+
+What it does:
+When your controller is initially connected, or reconnected, it will set your throttle to 0%. Since you have to be at 0 throttle to ARM the drone, your throttle will usually be all the way down. However, the game starts with 50% throttle, so you have to wiggle the gimbal to re-register what the true position is. This mod sets your throttle to 0 between your controller initialization and its first input.
+
+
+How it works:
+It works out which end is "down" from your controller setup, so an inverted throttle, custom end points or a centre offset are handled. 
+If you reconnect the radio mid-session, it does this again.
+A gamepad set up so the resting stick already means zero throttle is left alone.
 
 ## zonemods
 

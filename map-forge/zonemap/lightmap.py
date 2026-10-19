@@ -237,6 +237,192 @@ ZONE_BEST_SKY_ROTATION = 45.0
 # custom map a fifth of its light and then applies a filmic curve built for a
 # full-range image.
 ZONE_NOSPEC_GAMMA = 0.6
+# ... and with Adapt lifting the dark areas first (see "dark areas" below),
+# a gentler one: 0.6 on top of the lift washed lit interiors out, and every
+# step towards 1 gives the shadows back some of the contrast 0.6 squeezes out.
+# Chosen from per-pixel previews of de_cpl_strike through the game's display
+# (x0.2 then ACES): 0.75 keeps interiors from clipping and the outdoor shade
+# readable.
+ZONE_ADAPT_GAMMA = 0.75
+
+
+# --- dark areas --------------------------------------------------------------
+# Baked as it was, a shadowed room came out as one flat dark tone with the
+# texture printed on it. Three things did that:
+#
+#   * LIGHT_FLOOR was a hard clamp. Everything Valve lit below 4 % of "fully
+#     lit" came out at exactly 4 %, so the darkest parts of a room - the
+#     corners, the far end of a corridor - lost every gradient they had.
+#   * One exposure for the whole map. Source never shows a map that way: its
+#     HDR path adapts to where you stand (auto exposure), and a player's eye
+#     does the same. Baked into one albedo at one exposure, a room lit at 5 %
+#     sits in the game's tone-curve toe next to a courtyard at 100 %.
+#   * The fix the map then needed - --light-gamma 0.6 on the finished pixel -
+#     lifts the dark room but flattens it, because a gamma squeezes every
+#     ratio in it: a corner at half the light of the room's middle ends up
+#     at 0.66 of it.
+#
+# So the clamp becomes a pedestal (every gradient kept, nothing fully black),
+# and the bake gets a local exposure: Adapt looks at the light Valve put
+# round each point, averaged over a few metres the way an eye adapts, and
+# lifts a dark neighbourhood towards ADAPT_TARGET. A room is lifted as a
+# whole, so its own shading - the corners, the pools under the lamps, the
+# fall-off from a doorway - keeps its ratios, and the light gamma can stay
+# near 1. Only ever a lift: a sunlit area is left exactly as it was.
+SHADOW_PEDESTAL = 0.03   # light = PEDESTAL + (1 - PEDESTAL) * light
+ADAPT_TARGET = 0.35      # the level (of fully lit) a neighbourhood is lifted to;
+                         # 0.5 washed lit interiors out towards white
+ADAPT_STRENGTH = 0.6     # 0 = off; 1 = every neighbourhood brought to target
+ADAPT_MAX = 4.0          # the most a dark neighbourhood is lifted (2 stops)
+ADAPT_RADIUS_M = 3.0     # how far round a point the eye averages (Gaussian sigma)
+ADAPT_CELL_M = 1.0       # the grid that average is kept on
+
+
+def shadow_floor(light, pedestal=SHADOW_PEDESTAL):
+    """Nothing fully black, every gradient kept (LIGHT_FLOOR clamped them)."""
+    p = float(pedestal)
+    return p + (1.0 - p) * np.asarray(light)
+
+
+def _blur_axis(a, axis, sigma):
+    """Gaussian blur along one axis, as three box blurs (cumulative sums)."""
+    if sigma <= 0.0 or a.shape[axis] < 2:
+        return a
+    n = 3
+    w = int(round(math.sqrt(12.0 * sigma * sigma / n + 1.0)))
+    w += 1 - (w % 2)                       # odd
+    r = w // 2
+    out = np.moveaxis(a, axis, 0)
+    for _ in range(n):
+        pad = np.concatenate([np.zeros_like(out[:1]).repeat(r + 1, 0), out,
+                              np.zeros_like(out[:1]).repeat(r, 0)], 0)
+        c = np.cumsum(pad, axis=0, dtype=np.float64)
+        out = ((c[w:] - c[:-w]) / w).astype(np.float32)
+    return np.moveaxis(out, 0, axis)
+
+
+def luxel_cloud(bsp, scale):
+    """Every worldspawn luxel: (N,3) Hammer-space positions, (N,) luminance in
+    Source lightmap units, (N,) the area each stands for in square metres.
+    Brush entities are left out - their faces are model-local."""
+    raw = bsp.lump(L_LIGHTING)
+    if not len(raw):
+        raw = bsp.lump(L_LIGHTING_HDR)
+    if not len(raw):
+        return np.zeros((0, 3)), np.zeros(0), np.zeros(0)
+    mdl = bsp.models[0]
+    f0, fn = int(mdl['firstface']), int(mdl['numfaces'])
+    Y = np.array([0.2126, 0.7152, 0.0722], np.float32)
+    P, L, A = [], [], []
+    for fi in range(f0, f0 + fn):
+        f = bsp.faces[fi]
+        off = int(f['lightofs'])
+        if off < 0:
+            continue
+        w = int(f['lm_size'][0]) + 1
+        h = int(f['lm_size'][1]) + 1
+        if w < 1 or h < 1 or w * h > 1 << 20 or off + w * h * 4 > len(raw):
+            continue
+        ti = bsp.texinfo[int(f['texinfo'])]
+        lv = np.asarray(ti['lm_vecs'], np.float64)
+        pl = bsp.planes[int(f['planenum'])]
+        n = np.asarray(pl['normal'], np.float64)
+        M = np.stack([lv[0, :3], lv[1, :3], n])
+        try:
+            inv = np.linalg.inv(M)
+        except np.linalg.LinAlgError:
+            continue
+        mins = np.asarray(f['lm_mins'], np.float64)
+        S, T = np.meshgrid(np.arange(w, dtype=np.float64), np.arange(h, dtype=np.float64))
+        rhs = np.stack([(S + mins[0] - lv[0, 3]).ravel(),
+                        (T + mins[1] - lv[1, 3]).ravel(),
+                        np.full(S.size, float(pl['dist']))])
+        P.append((inv @ rhs).T)
+        L.append(_decode(raw[off:off + w * h * 4], w * h) @ Y)
+        lux = (1.0 / max(float(np.linalg.norm(lv[0, :3])), 1e-9)) * scale
+        A.append(np.full(w * h, lux * lux, np.float32))
+    if not P:
+        return np.zeros((0, 3)), np.zeros(0), np.zeros(0)
+    return np.concatenate(P), np.concatenate(L), np.concatenate(A)
+
+
+class Adapt:
+    """Baked eye adaptation: how much to lift the light at a point.
+
+    The log-average of the light round the point (luminance, as auto exposure
+    meters it), over a Gaussian of ADAPT_RADIUS_M, from every worldspawn luxel
+    weighted by the area it covers. gain = (target / level) ** strength,
+    never below 1 and never above max_gain."""
+
+    def __init__(self, bsp, scale, full=LIGHT_FULL, target=ADAPT_TARGET,
+                 strength=ADAPT_STRENGTH, max_gain=ADAPT_MAX,
+                 radius_m=ADAPT_RADIUS_M, cell_m=ADAPT_CELL_M, verbose=True):
+        self.strength = float(strength)
+        self.max_gain = max(float(max_gain), 1.0)
+        self.on = self.strength > 0.0 and self.max_gain > 1.0
+        if not self.on:
+            return
+        P, L, A = luxel_cloud(bsp, scale)
+        if not len(P):
+            self.on = False
+            return
+        self.cell = float(cell_m) / float(scale)          # Hammer units
+        self.lo = P.min(0) - 2 * self.cell
+        dims = np.floor((P.max(0) + 2 * self.cell - self.lo) / self.cell).astype(int) + 1
+        if int(np.prod(dims)) > 60_000_000:              # a huge map: coarser
+            k = (np.prod(dims) / 60_000_000) ** (1 / 3)
+            self.cell *= float(k)
+            dims = np.floor((P.max(0) + 2 * self.cell - self.lo) / self.cell).astype(int) + 1
+        self.dims = dims
+        idx = np.floor((P - self.lo) / self.cell).astype(np.int64)
+        flat = np.ravel_multi_index(idx.T, dims)
+        rel = np.clip(L / float(full), 1e-3, 4.0)
+        wsum = np.bincount(flat, weights=A, minlength=int(np.prod(dims))).astype(np.float32)
+        lsum = np.bincount(flat, weights=A * np.log(rel), minlength=int(np.prod(dims))).astype(np.float32)
+        wsum, lsum = wsum.reshape(dims), lsum.reshape(dims)
+        sig = float(radius_m) / (self.cell * float(scale))
+        for ax in range(3):
+            wsum = _blur_axis(wsum, ax, sig)
+            lsum = _blur_axis(lsum, ax, sig)
+        glob = float(np.sum(A * np.log(rel)) / max(np.sum(A), 1e-9))
+        have = wsum > 1e-6
+        level = np.full(dims, glob, np.float32)
+        level[have] = lsum[have] / wsum[have]
+        g = np.clip(self.strength * (math.log(float(target)) - level), 0.0, math.log(self.max_gain))
+        self.loggain = g.astype(np.float32)
+        gp = np.exp(np.clip(self.strength * (math.log(float(target)) - np.log(rel)), 0.0, math.log(self.max_gain)))
+        self.stats = {'luxels': int(len(P)), 'cell_m': round(self.cell * float(scale), 2),
+                      'grid': [int(d) for d in dims],
+                      'lifted_share': round(float(np.sum(A * (gp > 1.05)) / max(np.sum(A), 1e-9)), 3)}
+        if verbose:
+            print(f'      adapt: {len(P)} luxels on a {dims[0]}x{dims[1]}x{dims[2]} grid '
+                  f'of {self.stats["cell_m"]} m; target {target}, strength {self.strength}, '
+                  f'up to {self.max_gain}x over {radius_m} m')
+
+    def gain(self, pts):
+        """(N,3) Hammer-space points -> (N,) multiplier on the light, >= 1."""
+        pts = np.asarray(pts, np.float64)
+        if not self.on or not len(pts):
+            return np.ones(len(pts), np.float32)
+        u = (pts - self.lo) / self.cell - 0.5
+        d = np.asarray(self.dims)
+        u = np.clip(u, 0.0, d - 1.000001)
+        i0 = np.floor(u).astype(np.int64)
+        f = (u - i0).astype(np.float32)
+        i1 = np.minimum(i0 + 1, d - 1)
+        G = self.loggain
+        out = np.zeros(len(pts), np.float32)
+        for cx in (0, 1):
+            xi = i1[:, 0] if cx else i0[:, 0]
+            wx = f[:, 0] if cx else 1 - f[:, 0]
+            for cy in (0, 1):
+                yi = i1[:, 1] if cy else i0[:, 1]
+                wy = f[:, 1] if cy else 1 - f[:, 1]
+                for cz in (0, 1):
+                    zi = i1[:, 2] if cz else i0[:, 2]
+                    wz = f[:, 2] if cz else 1 - f[:, 2]
+                    out += wx * wy * wz * G[xi, yi, zi]
+        return np.exp(out)
 
 
 def tonemap(L, full=None, gain=1.0, knee=KNEE_AT):
@@ -279,7 +465,8 @@ class Tile:
 class Bake:
     def __init__(self, bsp, bank, scale=BU.UNIT, cell_m=48.0, texel_cm=0.0,
                  page_px=PAGE_PX, brightness=BRIGHTNESS, flat_gain=1.0,
-                 verbose=True):
+                 adapt=ADAPT_STRENGTH, adapt_max=ADAPT_MAX,
+                 pedestal=SHADOW_PEDESTAL, verbose=True):
         self.bsp, self.bank, self.scale = bsp, bank, scale
         self.cell_m, self.page_px, self.verbose = cell_m, page_px, verbose
         self.texel_m = (texel_cm / 100.0) if texel_cm > 0 else 0.0
@@ -292,6 +479,10 @@ class Bake:
         self._scale_light = 1.0
         self.brightness = float(brightness)
         self.flat_gain = float(flat_gain)
+        self.pedestal = float(pedestal)
+        self.adapt = (Adapt(bsp, scale, strength=adapt, max_gain=adapt_max,
+                            verbose=verbose)
+                      if adapt and adapt > 0.0 and adapt_max > 1.0 else None)
 
     # ---------------------------------------------------------------- data
     def _lighting(self):
@@ -615,8 +806,11 @@ class Bake:
         lm = self.luxels(fi)
         if lm is None:
             return None
-        light = tonemap(_bilinear(lm, S, T), self._scale_light, self.brightness)
-        light = np.maximum(light, LIGHT_FLOOR)
+        lux = _bilinear(lm, S, T)
+        if self.adapt is not None:
+            lux = lux * self.adapt.gain(pts).reshape(t.th, t.tw, 1)
+        light = shadow_floor(tonemap(lux, self._scale_light, self.brightness),
+                             self.pedestal)
 
         out = _srgb_to_lin(a) * light * gain
         if self.flat_gain != 1.0:

@@ -194,6 +194,17 @@ def _vec(txt, default=(0.0, 0.0, 0.0)):
         return np.array(default, np.float64)
 
 
+def _angle_matrix(pitch, yaw, roll):
+    """Source's AngleMatrix: yaw about Z, then pitch about Y (positive tips
+    the nose down), then roll about X - columns forward, left, up."""
+    p, y, r = (math.radians(v) for v in (pitch, yaw, roll))
+    cp, sp, cy, sy, cr, sr = math.cos(p), math.sin(p), math.cos(y), math.sin(y), math.cos(r), math.sin(r)
+    Rz = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]], np.float64)
+    Ry = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]], np.float64)
+    Rx = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]], np.float64)
+    return Rz @ Ry @ Rx
+
+
 def _angles_to_forward(pitch, yaw, roll=0.0):
     p, y = math.radians(pitch), math.radians(yaw)
     return np.array([math.cos(p) * math.cos(y), math.cos(p) * math.sin(y),
@@ -271,17 +282,19 @@ def brush_entity_transform(bsp, mi, ent, doors='open'):
                 deg = 0.0
             if sf & 2:            # reverse dir
                 deg = -deg
-            axis = 2              # yaw by default
-            if sf & 64:
-                axis = 2
-            elif sf & 128:
-                axis = 0
-            a = math.radians(deg)
-            c, sn = math.cos(a), math.sin(a)
-            if axis == 2:
-                R = np.array([[c, -sn, 0], [sn, c, 0], [0, 0, 1]], np.float64)
-            else:
-                R = np.array([[1, 0, 0], [0, c, -sn], [0, sn, c]], np.float64)
+            # Source (CBaseToggle::AxisDir, CRotDoor::Spawn) opens it by
+            # ADDING to the entity's own angles: yaw by default, roll with
+            # "X Axis" (64), pitch with "Y Axis" (128) - so a flag axis is the
+            # door's own, turned by its angles. The old code swung "X Axis"
+            # doors about the vertical and "Y Axis" ones about the world X:
+            # a lid or flap facing anywhere but along X turned in its own
+            # plane and stayed shut (gm_br_pitfalls' kitchen cabinets, the
+            # dumpster lids, the server hatches, the bookcase flap).
+            ang = _vec(ent.get('angles', '0 0 0'))
+            mv = (np.array([0.0, 0.0, 1.0]) if sf & 64 else
+                  np.array([1.0, 0.0, 0.0]) if sf & 128 else
+                  np.array([0.0, 1.0, 0.0]))
+            R = _angle_matrix(*(ang + mv * deg)) @ _angle_matrix(*ang).T
         elif (cn in ('func_door', 'func_movelinear')
               or (cn == 'func_door_rotating' and not local)):
             # A rotating door with no origin brush has no pivot to swing
@@ -481,12 +494,83 @@ def carry_point(p, M, carriers, parentname=None):
             c['R'] @ M, c)
 
 
+NOSOLID = 'zone_nosolid'      # node prefix: drawn, but nothing collides with it
+PASS_NEVER_SOLID = True       # forge.py --solid-fake-brushes sets it False
+
+
+def never_solid(e):
+    """A brush entity Source draws but never collides with.
+
+    func_brush "Solidity" 1 (never solid) and func_illusionary. gm_br_pitfalls
+    has 23: the black and white-glow planes standing in doorways where the
+    areaportals are (brush_AreaPortal*, portalbrush_*), its fake floors - the
+    pitfalls the map is named for - fake walls and curtains. The game makes
+    every mesh of a map solid, so drawn as ordinary world they sealed those
+    doorways and floors; they go into their own nodes instead, each with a
+    tiny '-collider' stand-in (the game's own manual-collider convention), so
+    they are seen and flown through.
+    """
+    cn = str(e.get('classname', '')).lower()
+    if cn == 'func_illusionary':
+        return True
+    return cn == 'func_brush' and str(e.get('Solidity', '0')).strip() == '1'
+
+
+CONTENTS_PLAYERCLIP = 0x10000
+_CLIPS = {}
+
+
+def clipped_fraction(bsp, mi, rot, shift, margin=1.0):
+    """How much of brush model mi (placed by rot, shift) a player clip fills.
+
+    A never-solid brush can still stop a player in Source when the mapper put
+    a clip brush in the same space - a func_illusionary wall with playerclip
+    behind it. The forge draws no clips, so passing through such a brush here
+    would open a hole Source never had: those stay solid.
+    """
+    key = id(bsp)
+    if key not in _CLIPS:
+        from . import nodraw as ND
+        br = ND.Brushes(bsp)
+        cl = []
+        for bi in np.flatnonzero(br.brushes['contents'] & CONTENTS_PLAYERCLIP):
+            N, D, _S = br.brush_planes(int(bi))
+            if len(N) >= 4:
+                cl.append((N, D))
+        _CLIPS[key] = cl
+    clips = _CLIPS[key]
+    if not clips:
+        return 0.0
+    m = bsp.models[mi]
+    tot = hit = 0.0
+    for fi in range(int(m['firstface']), int(m['firstface']) + int(m['numfaces'])):
+        loop = bsp.face_loop(fi)
+        if len(loop) < 3:
+            continue
+        q = bsp.verts[loop].astype(np.float64)
+        q = (q @ rot.T if rot is not None else q) + shift
+        c = q.mean(0)
+        a = float(np.linalg.norm(np.cross(q - c, np.roll(q, -1, axis=0) - c).sum(0))) / 2
+        tot += a
+        if any(bool(((N @ c) <= (D + margin)).all()) for N, D in clips):
+            hit += a
+    return hit / tot if tot > 0 else 0.0
+
+
 def extract(bsp, scale=UNIT, cell_m=48.0, include_brush_ents=True,
             keep_translucent=True, fill_mode='exposed', doors='open',
             breakables='remove', blend_bands=None, blend_cell=1.5,
-            rebuild_culled=True, min_exposed=0.10, bake=None, verbose=True):
-    """Walk the BSP and return (chunks, stats). Chunks are in glTF space."""
+            rebuild_culled=True, min_exposed=0.10, bake=None, face_filter=None,
+            verbose=True):
+    """Walk the BSP and return (chunks, stats). Chunks are in glTF space.
+
+    face_filter: an optional test on a face's centre (Hammer units, as
+    stored): only the faces it passes are taken (tools/add_extras.py takes the
+    3D skybox room alone this way), and nothing is filled."""
+    if face_filter is not None:
+        fill_mode = 'none'
     ch = Chunker(cell_m)
+    ch_ns = Chunker(cell_m)      # never-solid brush entities (never_solid)
     stats = collections.Counter()
     disp_by_face = {d['mapface']: i for i, d in enumerate(bsp.dispinfo)}
     ments = model_entities(bsp) if include_brush_ents else {}
@@ -535,8 +619,19 @@ def extract(bsp, scale=UNIT, cell_m=48.0, include_brush_ents=True,
                 stats['ent_models_offset'] += 1
         else:
             shift = np.zeros(3)
+        cc = ch
+        if mi and PASS_NEVER_SOLID and never_solid(ments[mi]):
+            if clipped_fraction(bsp, mi, rot, shift) > 0.5:
+                stats['never_solid_kept_solid_clipped'] += 1
+            else:
+                cc = ch_ns
+                stats['never_solid_brushes'] += 1
         f0, fn = int(mdl['firstface']), int(mdl['numfaces'])
         for fi in range(f0, f0 + fn):
+            if face_filter is not None:
+                _lp = bsp.face_loop(fi)
+                if len(_lp) < 3 or not face_filter(bsp.verts[_lp].astype(np.float64).mean(axis=0)):
+                    continue
             name, flags, w, h = bsp.face_material(fi)
             if name is None:
                 stats['no_texinfo'] += 1; continue
@@ -580,14 +675,14 @@ def extract(bsp, scale=UNIT, cell_m=48.0, include_brush_ents=True,
                     tu = su.reshape(-1, 3, 2).astype(np.float32)
                     for kk in np.unique(k):
                         sel = k == kk
-                        ch.add(f'{name.lower()}#b{int(kk)}/{nbands}',
+                        cc.add(f'{name.lower()}#b{int(kk)}/{nbands}',
                                tp[sel].reshape(-1, 3), tn[sel].reshape(-1, 3),
                                tu[sel].reshape(-1, 2))
                     stats['blend_faces'] += 1
                     stats['blend_tris'] += len(dtris)
                     stats['blend_tris_after_subdiv'] += len(tp)
                 else:
-                    ch.add(name.lower(), gp, gn, u)
+                    cc.add(name.lower(), gp, gn, u)
                 stats['disp_faces'] += 1
                 stats['disp_tris'] += len(dtris)
             else:
@@ -624,11 +719,11 @@ def extract(bsp, scale=UNIT, cell_m=48.0, include_brush_ents=True,
                     else None
                 bu = bake.uv(fi, p) if bmat else None
                 if bu is not None:
-                    ch.add(bmat, gp, gn, bu)
+                    cc.add(bmat, gp, gn, bu)
                     stats['baked_faces'] += 1
                     stats['baked_tris'] += k - 2
                 else:
-                    ch.add(name.lower(), gp, gn, u)
+                    cc.add(name.lower(), gp, gn, u)
                     stats['brush_faces'] += 1
                     stats['brush_tris'] += k - 2
 
@@ -668,6 +763,7 @@ def extract(bsp, scale=UNIT, cell_m=48.0, include_brush_ents=True,
                                    exclude_volumes=excl,
                                    rebuild_culled=rebuild_culled,
                                    min_exposed=min_exposed,
+                                   doors=doors, breakables=breakables,
                                    verbose=verbose)
         for mat, donor_ti, q, n in fills:
             if (donor_ti is not None and donor_ti >= 0
@@ -687,4 +783,7 @@ def extract(bsp, scale=UNIT, cell_m=48.0, include_brush_ents=True,
             stats['filled_tris'] += k - 2
         for kk, vv in fstats.items():
             stats['fill_' + kk] = vv
-    return ch.finish(), stats
+    # never-solid entities' chunks carry a 4th cell field, which convert
+    # names NOSOLID_... and gives a '-collider' stand-in
+    return ch.finish() + [(m, tuple(c) + ('ns',), p, n, u, i)
+                          for (m, c, p, n, u, i) in ch_ns.finish()], stats

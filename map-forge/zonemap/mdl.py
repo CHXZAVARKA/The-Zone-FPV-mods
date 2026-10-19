@@ -2,6 +2,9 @@
 import struct, math, numpy as np
 
 VERT_SIZE = 48          # mstudiovertex_t
+POSE = True             # draw models in their first sequence's pose (mdlpose.py);
+                        # tools/add_extras.py turns it off to find where an
+                        # older forge put them
 
 
 def _cstr(buf, off):
@@ -277,13 +280,25 @@ def load_model(fs, path, skin=0):
     except Exception as e:
         return None, f'{type(e).__name__}: {e}'
 
-    # NOTE: do NOT apply the bone bind pose here. .vvd vertices are already in
-    # MODEL space: the runtime skinning matrix is boneToWorld * poseToBone, and
-    # at rest those cancel to identity. Three inferno models (elevatordoor,
-    # tv_monitor01, grainbasket01c) lack the $staticprop flag and have bone 0 at
-    # quat (.707,0,0,.707); applying it lays a standing 104x2.4x116 door panel
-    # flat on the floor. bind_matrices() is kept for a future animated path.
+    # NOTE: do NOT apply the bone BIND pose here: the runtime skinning matrix is
+    # boneToWorld * poseToBone, and where the drawn pose is the bind pose those
+    # cancel. Three inferno models (elevatordoor, tv_monitor01, grainbasket01c)
+    # have bone 0 at quat (.707,0,0,.707); applying it lays a standing door
+    # panel flat on the floor.
     src_pos, src_nrm = vvd.pos, vvd.nrm
+    # ...but they are drawn in the pose of the model's first sequence, which
+    # need not be the bind pose: doors and switches are often built a quarter
+    # turn from how their idle sequence stands them (mdlpose.py)
+    if POSE and not mdl.is_staticprop:
+        from . import mdlpose as MP
+        try:
+            pose, _why = MP.frame0(mb, read=lambda: fs.read(base + '.ani'))
+        except (struct.error, IndexError, ValueError):
+            pose = None
+        if pose is not None:
+            pp, pn, moved = MP.skin(vvd, pose)
+            if moved > 0.01 and np.isfinite(pp).all():
+                src_pos, src_nrm = pp.astype(np.float32), pn.astype(np.float32)
 
     parts = []
     for bi, bp in enumerate(mdl.bodyparts):

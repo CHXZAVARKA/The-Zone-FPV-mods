@@ -22,7 +22,7 @@ UVs instead).
 """
 import os, re, glob, json, math, time, collections
 import numpy as np
-from . import upak, uasset, umesh, umat, uland, ugeo, ulevel, locate, manifest as MF
+from . import upak, uasset, umesh, umat, uland, ugeo, ulevel, locate, manifest as MF, flatten as FL
 from .glb import Glb
 from .convert import mirror_faces, slug, ENGINE_DEFAULT_SPAWN_Y
 from .cutout import trim
@@ -1003,6 +1003,11 @@ def convert(map_arg, out_dir=None, name=None, out_root='./out', game_dir=None,
     turn, turn_q = MF.spawn_turn(face) if recenter else (0.0, None)
     root = glb.node(name, children=kids, rotation=turn_q if turn else None)
     glb.root(root)
+    if turn:
+        # into the map itself, not left on the root node (flatten.py)
+        fl = FL.flatten_roots(glb.j, glb.blob)
+        if verbose:
+            print(f'[5/5] facing the spawn down -Z: {FL.describe(fl)}')
     os.makedirs(out_dir, exist_ok=True)
     glb_path = os.path.join(out_dir, f'{name}.glb')
     size = glb.save(glb_path)
@@ -1043,6 +1048,7 @@ def convert(map_arg, out_dir=None, name=None, out_root='./out', game_dir=None,
         'spawn_ue_cm': [round(float(x), 1) for x in spawn[:3, 3]],
         'origin_shift': [round(float(x), 3) for x in shift], 'sky': sky,
         'map_turn_deg': round(math.degrees(turn), 2),
+        'turn_in_geometry': bool(turn),
         'sky_rotation': round(rot, 2), 'manifest': man,
         'materials_detail': bank.report, 'seconds': round(time.time() - t0, 1),
     }

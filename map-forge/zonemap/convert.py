@@ -1,6 +1,8 @@
 """de_inferno.bsp -> custom_maps/<name>/<name>.glb + manifest.json"""
 import os, re, json, time, math, collections, numpy as np
-from . import bsp as B, build as BU, manifest as MF, propbuild as PB
+from . import bsp as B, build as BU, manifest as MF, propbuild as PB, flatten as FL, sky as SKY
+from . import extras as EX
+from . import tjunc as TJ
 from .sourcefs import SourceFs
 from .glb import Glb
 from .materials import MaterialBank, is_light_effect
@@ -377,6 +379,22 @@ def pick_spawn(bsp, chunks, scale, need, verbose=True):
     return best if best else (None, None, 0.0, 0.0)
 
 
+def collider_stub(glb, name, pos, mid):
+    """'<name>-collider', the mesh the game collides with in place of <name>.
+
+    The game's loader (z_asset_loader.handle_manual_colliders) takes any node
+    'X-collider' as X's collision shape, hides it and frees the shape it made
+    from X itself. One 2 cm triangle at X's first corner leaves X nothing to
+    hit (any smaller and Jolt drops it as degenerate, with an error a node) - drawn, and flown through, as Source has a never-solid brush.
+    """
+    p0 = np.asarray(pos[0], np.float32)
+    P = np.array([p0, p0 + np.float32([0.02, 0, 0]), p0 + np.float32([0, 0.02, 0])], np.float32)
+    N = np.tile(np.array([0, 0, 1], np.float32), (3, 1))
+    U = np.zeros((3, 2), np.float32)
+    I = np.array([[0, 1, 2]], np.uint32)
+    return glb.node(name + '-collider', mesh=glb.mesh(name + '-collider', [(P, N, U, I, mid)]))
+
+
 def convert(bsp_path, out_dir, name=None, game_dirs=None, scale=BU.UNIT,
             cell_m=48.0, albedo_px=512, normal_px=256, albedo_jpeg=True,
             jpeg_q=90, gen_normals=True, flip_green=False, emissive=True,
@@ -390,11 +408,12 @@ def convert(bsp_path, out_dir, name=None, game_dirs=None, scale=BU.UNIT,
             blend_bands=5, blend_cell=1.5, roughness_scale=1.0,
             roughness_min=0.0,
             water_roughness=0.6, water_value=0.28, rebuild_culled=True,
-            min_exposed=0.10, skybox_cut=None, expand_skybox=False,
+            min_exposed=0.10, skybox_cut=None, expand_skybox=False, sky=None,
             bsp_bytes=None, archives=(), bake_lightmaps=False,
             bake_texel_cm=0.0, bake_page=2048, bake_exposure=None,
-            flat_normals=None, bake_brightness=None,
-            verbose=True):
+            flat_normals=None, bake_brightness=None, bake_adapt=None,
+            bake_adapt_max=None, bake_pedestal=None, tjunctions=True,
+            cut_fills=True, pass_never_solid=True, verbose=True):
     t0 = time.time()
     mapname = os.path.splitext(os.path.basename(bsp_path))[0]
     name = name or mapname
@@ -441,7 +460,11 @@ def convert(bsp_path, out_dir, name=None, game_dirs=None, scale=BU.UNIT,
         from .lightmap import Bake
         from .lightmap import BRIGHTNESS as _BR
         from .lightmap import ZONE_FLAT_GAIN as _ZFG
+        from . import lightmap as _LM
         bake = Bake(bsp, bank, scale=scale, cell_m=cell_m,
+                    adapt=(_LM.ADAPT_STRENGTH if bake_adapt is None else bake_adapt),
+                    adapt_max=(_LM.ADAPT_MAX if bake_adapt_max is None else bake_adapt_max),
+                    pedestal=(_LM.SHADOW_PEDESTAL if bake_pedestal is None else bake_pedestal),
                     texel_cm=bake_texel_cm, page_px=bake_page,
                     brightness=(_BR if bake_brightness is None else bake_brightness),
                     flat_gain=(_ZFG if flat_normals is not None else 1.0),
@@ -449,6 +472,9 @@ def convert(bsp_path, out_dir, name=None, game_dirs=None, scale=BU.UNIT,
         bake.plan(disp_faces={int(d['mapface']) for d in bsp.dispinfo},
                   blend_test=_blend_bands)
 
+    from . import nodraw as _ND
+    _ND.CUT = bool(cut_fills)     # cut rebuilt faces around drawn ones, not sink them
+    BU.PASS_NEVER_SOLID = bool(pass_never_solid)   # never-solid brushes flown through
     chunks, stats = BU.extract(bsp, scale=scale, cell_m=cell_m, bake=bake,
                                include_brush_ents=brush_ents,
                                fill_mode=fill_mode, doors=doors,
@@ -468,6 +494,7 @@ def convert(bsp_path, out_dir, name=None, game_dirs=None, scale=BU.UNIT,
             print(f'[2/5] dropped {before - len(chunks)} light-effect chunks '
                   f'({dropped_tris} tris) - additive/glow cards are not matter')
     play = playable_centre(bsp)
+    sky3d_chunks = []
     sky_cut, sky_note = SKYBOX_BIAS, None
     sky_ceiling = None
     sky_factor = sky_camera_scale(bsp)
@@ -485,6 +512,12 @@ def convert(bsp_path, out_dir, name=None, game_dirs=None, scale=BU.UNIT,
             if sky_ceiling is not None:
                 stats['skybox_ceiling_m'] = round(float(sky_ceiling), 2)
         else:
+            # with sky walls the 3D skybox room is kept where it is, for the
+            # map_extras mod to draw on them (zonemap/extras.py)
+            if (sky or 'walls') == 'walls' and sky_camera(bsp) is not None and play is not None and len(play):
+                _sg = BU.to_gltf(sky_camera(bsp)[None, :], scale)[0]
+                _pp = BU.to_gltf(play, scale)
+                sky3d_chunks = [c for c in chunks if in_3d_skybox(c[2].mean(axis=0), _sg, _pp, sky_cut)]
             chunks, nd, ndt = drop_3d_skybox(chunks, sky_camera(bsp), play,
                                              scale, bias=sky_cut)
         stats['skybox_cut'] = round(sky_cut, 4)
@@ -497,8 +530,52 @@ def convert(bsp_path, out_dir, name=None, game_dirs=None, scale=BU.UNIT,
                   + (f', gap x{sky_note["jump"]}' if sky_note
                      else ', forced' if skybox_cut is not None else ', fixed')
                   + ')')
+    # ---- the sky brushes, kept as sky surfaces (zonemap/sky.py) ------------
+    # walls by default; not with an expanded 3D skybox, which stands beyond
+    # them and would be hidden
+    sky_mode = sky or ('none' if expand_skybox else 'walls')
+    sky_pos = sky_nrm = sky_info = sky3d_sky = None
+    if sky_mode == 'walls':
+        sky_pos, sky_nrm = SKY.faces(bsp, scale)
+        n_all = len(sky_pos) // 3
+        sc = sky_camera(bsp)
+        if n_all and not keep_3d_skybox and sc is not None and play is not None and len(play):
+            sky_g = BU.to_gltf(sc[None, :], scale)[0]
+            play_pts = BU.to_gltf(play, scale)
+            cen = sky_pos.reshape(-1, 3, 3).mean(axis=1)
+            _in3d = [in_3d_skybox(c, sky_g, play_pts, sky_cut) for c in cen]
+            # the 3D skybox room's own sky faces: only what the room shows
+            # from sky_camera on average (light_sky3d), not surfaces
+            sky3d_sky = SKY.keep_tris(sky_pos, sky_nrm, _in3d)[0]
+            sky_pos, sky_nrm = SKY.keep_tris(sky_pos, sky_nrm, [not k for k in _in3d])
+        sky_info = {'triangles': len(sky_pos) // 3, 'area_m2': round(SKY.area(sky_pos)),
+                    'dropped_with_3d_skybox': n_all - len(sky_pos) // 3}
+        if verbose and len(sky_pos):
+            print(f'[2/5] sky: {sky_info["triangles"]} triangles ({sky_info["area_m2"]:,} m2) of sky '
+                  f'brush kept as zone_sky surfaces - solid, the sky drawn on them by the map_extras mod'
+                  + (f'; {sky_info["dropped_with_3d_skybox"]} more were the 3D skybox\'s'
+                     if sky_info['dropped_with_3d_skybox'] else ''))
+    elif verbose and expand_skybox and not sky:
+        print('[2/5] sky: brushes left out - the expanded 3D skybox stands beyond them (--sky walls keeps them)')
+    # ---- T-junctions: seams closed where a corner sits on another face's
+    # edge (zonemap/tjunc.py) - the world and the sky surfaces together
+    if tjunctions and chunks:
+        allc = list(chunks)
+        has_sky = sky_pos is not None and len(sky_pos) > 0
+        if has_sky:
+            allc.append(('#sky', (0, 0, 0), np.asarray(sky_pos, np.float32), np.asarray(sky_nrm, np.float32),
+                         np.zeros((len(sky_pos), 2), np.float32),
+                         np.arange(len(sky_pos), dtype=np.uint32).reshape(-1, 3)))
+        allc, tst = TJ.fix(allc, verbose=verbose)
+        if has_sky:
+            sk = allc.pop()
+            I = np.asarray(sk[5]).reshape(-1)
+            sky_pos, sky_nrm = sk[2][I], sk[3][I]
+        chunks = allc
+        for k, v in tst.items():
+            stats['tjunction_' + k] = v
     tris = sum(len(c[5]) for c in chunks)
-    mats = sorted({c[0] for c in chunks})
+    mats = sorted({c[0] for c in chunks} | {c[0] for c in sky3d_chunks})
     if verbose:
         print(f'[2/5] geometry: {tris:,} tris in {len(chunks)} chunks, '
               f'{len(mats)} materials')
@@ -526,6 +603,12 @@ def convert(bsp_path, out_dir, name=None, game_dirs=None, scale=BU.UNIT,
         origin_shift = np.array([-sp0[0], ground_y - gy, -sp0[2]])
         chunks = [(m, cell, pos + origin_shift.astype(np.float32), nrm, uv, idx)
                   for (m, cell, pos, nrm, uv, idx) in chunks]
+        sky3d_chunks = [(m, cell, pos + origin_shift.astype(np.float32), nrm, uv, idx)
+                        for (m, cell, pos, nrm, uv, idx) in sky3d_chunks]
+        if sky_pos is not None and len(sky_pos):
+            sky_pos = sky_pos + origin_shift.astype(np.float32)
+        if sky3d_sky is not None and len(sky3d_sky):
+            sky3d_sky = sky3d_sky + origin_shift.astype(np.float32)
         if verbose:
             print(f'[3/5] recentring: spawn ground -> y={ground_y:.2f} so the '
                   f'drone starts {spawn_height:.2f} m up '
@@ -562,6 +645,9 @@ def convert(bsp_path, out_dir, name=None, game_dirs=None, scale=BU.UNIT,
     from .lightmap import MAT_PREFIX as _LM
     for m, cell, pos, nrm, uv, idx in chunks:
         nm = f'{slug(m)}_{cell[0]}_{cell[1]}_{cell[2]}'
+        ns = len(cell) > 3 and cell[3] == 'ns'
+        if ns:
+            nm = f'{BU.NOSOLID}_{nm}'      # never solid (build.never_solid)
         mid = mat_idx[m]
         if flat_normals is not None and m.startswith(_LM):
             # The pixel is ALBEDO * (DIFFUSE_LIGHT + AMBIENT), the game gives a
@@ -578,6 +664,17 @@ def convert(bsp_path, out_dir, name=None, game_dirs=None, scale=BU.UNIT,
             stats['two_sided_tris_added'] += len(idx) // 2
         mi = glb.mesh(nm, [(pos, nrm, uv, idx, mid)])
         kids.append(glb.node(nm, mesh=mi))
+        if ns:
+            kids.append(collider_stub(glb, nm, pos, mid))
+            stats['never_solid_nodes'] += 1
+    sky3d_nodes = []
+    for m, cell, pos, nrm, uv, idx in sky3d_chunks:
+        nm = f'{EX.SKY3D}_{slug(m)}_{cell[0]}_{cell[1]}_{cell[2]}'
+        mid = mat_idx[m]
+        if mid in bank.two_sided:
+            pos, nrm, uv, idx = mirror_faces(pos, nrm, uv, idx)
+        kids.append(glb.node(nm, mesh=glb.mesh(nm, [(pos, nrm, uv, idx, mid)])))
+        sky3d_nodes.append((kids[-1], m))
 
     prop_stats = {}
     skybox_expand = None
@@ -593,6 +690,9 @@ def convert(bsp_path, out_dir, name=None, game_dirs=None, scale=BU.UNIT,
 
             def region(t, _s=sky_g, _p=play_pts, _b=sky_cut):
                 return not in_3d_skybox(np.asarray(t, np.float64), _s, _p, _b)
+            if sky_mode == 'walls' and not expand_skybox:
+                def sky3d_region(t, _s=sky_g, _p=play_pts, _b=sky_cut):
+                    return in_3d_skybox(np.asarray(t, np.float64), _s, _p, _b)
             if expand_skybox:
                 # placed, not dropped: the loop needs the pre-shift frame
                 usky = BU.to_gltf(skyc[None, :], scale)[0]
@@ -606,7 +706,11 @@ def convert(bsp_path, out_dir, name=None, game_dirs=None, scale=BU.UNIT,
                 region = None
         if verbose:
             print('[4/5] placing static props...')
+        _sky3d = locals().get('sky3d_region')
         pnodes, prop_stats = PB.add_props(glb, fs, bank, bsp, scale=scale,
+                                          doors=doors,
+                                          drop_targets=(EX.animated_open(bsp) if doors == 'open' else ()),
+                                          alt_region=_sky3d, alt_prefix=EX.SKY3D + '_',
                                           include_entities=prop_ents,
                                           keep_region=region,
                                           nonsolid=nonsolid_props,
@@ -663,13 +767,66 @@ def convert(bsp_path, out_dir, name=None, game_dirs=None, scale=BU.UNIT,
             print(f'[4/5] {dupes} material names were duplicates and got '
                   f'suffixed (the game caches by name)')
 
+    if sky_pos is not None and len(sky_pos):
+        kids += SKY.add(glb, sky_pos, sky_nrm, cell_m=cell_m)
     # an uploaded map has no manifest, so the game spawns facing -Z: turn the
     # whole map about the spawn (recentring put it on the Y axis) so the
-    # chosen spawn's own facing is -Z (MF.spawn_turn)
+    # chosen spawn's own facing is -Z (MF.spawn_turn). The turn goes into the
+    # map itself - world meshes' vertices, props' own transforms - not onto
+    # the root node, so the .glb is laid out as you fly it (FL.flatten_roots)
     turn, turn_q = (MF.spawn_turn(MF.source_yaw_to_y_rotation(spawn_yaw))
                     if recenter and sp0 is not None else (0.0, None))
     root = glb.node(name, children=kids, rotation=turn_q if turn else None)
     glb.root(root)
+    if turn:
+        fl = FL.flatten_roots(glb.j, glb.blob)
+        if verbose:
+            print(f'[4/5] facing the spawn down -Z: {FL.describe(fl)}')
+
+    # ---- teleports and the 3D skybox, for the map_extras mod (extras.py) --
+    # in the map's final space: scaled, moved and turned as the geometry is
+    _Rt = np.array([[math.cos(turn), 0, math.sin(turn)], [0, 1, 0], [-math.sin(turn), 0, math.cos(turn)]])
+
+    def to_map(P):
+        return (BU.to_gltf(np.asarray(P, np.float64).reshape(-1, 3), scale) + origin_shift) @ _Rt.T
+
+    def dir_to_map(d):
+        return BU.to_gltf(np.asarray(d, np.float64)[None, :], 1.0)[0] @ _Rt.T
+
+    def to_src(P):
+        g = np.asarray(P, np.float64).reshape(-1, 3) @ _Rt - origin_shift
+        return np.stack([g[:, 0], -g[:, 2], g[:, 1]], axis=1) / scale
+    tps = EX.teleports(bsp, to_map, dir_to_map)
+    for i in EX.add_teleports(glb, tps):
+        glb.root(i)
+    n3d = sum(1 for n in glb.j['nodes'] if str(n.get('name', '')).startswith(EX.SKY3D + '_'))
+    sky3d_info = None
+    if n3d and sky_camera(bsp) is not None:
+        anchor = to_map(sky_camera(bsp))[0]
+        glb.root(EX.add_sky3d(glb, anchor, to_map(np.zeros(3))[0], sky_factor))
+        sky3d_info = {'nodes': n3d, 'anchor': anchor.round(2).tolist(), 'scale': sky_factor}
+        # the room is drawn by the mod and never baked: it carries Valve's
+        # own light, and what it shows on average becomes the sky surfaces'
+        # plain colour for players without the mod
+        _props3d = [i for i, n in enumerate(glb.j['nodes'])
+                    if str(n.get('name', '')).startswith(EX.SKY3D + '_prop') and 'mesh' in n]
+        _sky3d_sky = (None if sky3d_sky is None or not len(sky3d_sky)
+                      else (np.asarray(sky3d_sky, np.float64) @ _Rt.T))
+        lst, seen_col = EX.light_sky3d(glb, bsp, sky3d_nodes, _props3d, to_src, None, anchor,
+                                       unlit=EX.unlit_materials(bsp), sky_tris=_sky3d_sky,
+                                       sky_colour=SKY.COLOUR, verbose=verbose)
+        sky3d_info['light'] = lst
+        if seen_col is not None:
+            sky3d_info['sky_colour'] = [round(float(c), 4) for c in seen_col]
+            SKY.recolour(glb, seen_col)
+    if verbose and (tps or n3d):
+        print(f'[4/5] for the map_extras mod: {len(tps)} teleports'
+              + (f' ({sum(1 for t in tps if t["start_disabled"])} start disabled, '
+                 f'{sum(1 for t in tps if t["switched"])} switched by the map)' if tps else '')
+              + (f'; the 3D skybox room kept as {n3d} nodes (1/{sky_factor:g} scale)' if n3d else ''))
+    for k in ('prop_doors_opened', 'prop_doors_locked_shut', 'animated_props_left_out'):
+        if verbose and prop_stats.get(k):
+            print(f'[4/5] {k.replace("_", " ")}: {prop_stats[k]}')
 
     os.makedirs(out_dir, exist_ok=True)
     glb_path = os.path.join(out_dir, f'{name}.glb')
@@ -739,6 +896,9 @@ def convert(bsp_path, out_dir, name=None, game_dirs=None, scale=BU.UNIT,
         'sun_energy': round(energy, 3), 'manifest': man,
         'spawn_ground': ground, 'origin_shift': origin_shift.tolist(),
         'map_turn_deg': round(math.degrees(turn), 2),
+        'turn_in_geometry': bool(turn),
+        'sky_surfaces': sky_info,
+        'teleports': len(tps), 'sky3d': sky3d_info,
         'spawn_clearance_m': round(float(clear0), 2) if sp0 is not None else None,
         'lightmap_bake': (dict(bake.stats) if bake is not None else None),
         'materials_detail': bank.report,

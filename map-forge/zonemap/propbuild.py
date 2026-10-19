@@ -54,7 +54,8 @@ def mat_to_quat(R):
     return [x / n, y / n, z / n, w / n]
 
 
-def collect(bsp, include_entities=True, nonsolid='keep', exclude=()):
+def collect(bsp, include_entities=True, nonsolid='keep', exclude=(), doors='open',
+            drop_targets=(), counts=None):
     """All prop placements: [(model, skin, origin, angles, scale, source)]
 
     solid==0 props are pass-through in Source (window frames, vines, balcony
@@ -65,6 +66,8 @@ def collect(bsp, include_entities=True, nonsolid='keep', exclude=()):
     """
     out = []
     excl = tuple(e.lower() for e in exclude if e)
+    from .extras import door_logic, door_stays_shut, door_yaw
+    logic = door_logic(bsp) if doors == 'open' else set()
 
     def dropped(model):
         m = model.lower()
@@ -94,6 +97,13 @@ def collect(bsp, include_entities=True, nonsolid='keep', exclude=()):
                 continue
             if e.get('StartDisabled') == '1' or e.get('renderamt') == '0':
                 continue
+            # a prop the map's own logic animates open (extras.animated_open):
+            # it cannot be animated here, so it is left out - the way is open
+            if (doors == 'open' and cn.startswith('prop_dynamic')
+                    and str(e.get('targetname', '')).lower() in drop_targets):
+                if counts is not None:
+                    counts['animated_props_left_out'] += 1
+                continue
             try:
                 o = np.array([float(x) for x in e.get('origin', '0 0 0').split()[:3]])
             except ValueError:
@@ -105,6 +115,17 @@ def collect(bsp, include_entities=True, nonsolid='keep', exclude=()):
                     a = (pa[0], pa[1], pa[2])
                 except (ValueError, IndexError):
                     pass
+            if cn == 'prop_door_rotating' and doors == 'open':
+                if door_stays_shut(e, logic):
+                    # locked for good: a fake door on a wall stays shut
+                    if counts is not None:
+                        counts['prop_doors_locked_shut'] += 1
+                else:
+                    # turned about its hinge - the model's origin - as the
+                    # map's brush doors are opened (extras.door_yaw)
+                    a = (a[0], a[1] + door_yaw(e), a[2])
+                    if counts is not None:
+                        counts['prop_doors_opened'] += 1
             try:
                 s = float(e.get('modelscale', 1.0) or 1.0)
             except ValueError:
@@ -118,14 +139,26 @@ def add_props(glb, fs, bank, bsp, scale=BU.UNIT, include_entities=True,
               keep_region=None, nonsolid='keep', exclude=(),
               trim_cutouts=True, cutout_cell=0.75, offset=None,
               light_effects=False, carriers=(), skybox_expand=None,
-              verbose=True):
+              doors='open', drop_targets=(), prefix='', alt_region=None, alt_prefix='',
+              only_alt=False, select=None, verbose=True):
     """Build one glTF mesh per (model, skin) and one node per placement."""
+    stats = collections.Counter()
     placements, names, meta = collect(bsp, include_entities,
-                                      nonsolid=nonsolid, exclude=exclude)
+                                      nonsolid=nonsolid, exclude=exclude,
+                                      doors=doors, drop_targets=drop_targets,
+                                      counts=stats)
+    if select is not None:
+        # only these placements (tools/add_extras.py: the doors alone)
+        placements = [pl for pl in placements if select(pl)]
+    if only_alt and alt_region is not None:
+        # only the other place's props (tools/add_extras.py: the 3D skybox
+        # room alone), told apart before any model is read
+        off = np.zeros(3) if offset is None else np.asarray(offset, np.float64)
+        placements = [pl for pl in placements
+                      if alt_region((C @ np.asarray(pl[2], np.float64)) * scale + off)]
     if not placements:
         return [], dict(placements=0)
 
-    stats = collections.Counter()
     failed = []
     mesh_cache = {}
     nodes = []
@@ -189,7 +222,7 @@ def add_props(glb, fs, bank, bsp, scale=BU.UNIT, include_entities=True,
         if not prims:
             stats['model_empty'] += 1
             continue
-        nm = 'prop_' + path.split('/')[-1].replace('.mdl', '') + (f'_s{skin}' if skin else '')
+        nm = prefix + 'prop_' + path.split('/')[-1].replace('.mdl', '') + (f'_s{skin}' if skin else '')
         mesh = glb.mesh(nm, prims)
         mesh_cache[(path, skin)] = mesh
         stats['models'] += 1
@@ -219,12 +252,19 @@ def add_props(glb, fs, bank, bsp, scale=BU.UNIT, include_entities=True,
                     stats['skybox_expanded_props'] += 1
             if offset is not None:
                 t = t + np.asarray(offset)
+            node_name = nm
             if keep_region is not None and not keep_region(t):
-                stats['outside_region'] += 1
-                continue
+                # outside the map: some other place it belongs (the 3D
+                # skybox room, kept for the map_extras mod), or nowhere
+                if alt_region is not None and alt_region(t):
+                    node_name = alt_prefix + nm
+                    stats['alt_region_placed'] += 1
+                else:
+                    stats['outside_region'] += 1
+                    continue
             sc = float(s) * mult
             nodes.append(glb.node(
-                nm, mesh=mesh,
+                node_name, mesh=mesh,
                 translation=[float(x) for x in t],
                 rotation=mat_to_quat(Rg),
                 scale=[sc] * 3 if abs(sc - 1.0) > 1e-4 else None))

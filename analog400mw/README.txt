@@ -13,23 +13,26 @@ sideways and the ones below ease back, and on a weak link the top of the
 picture bends. At the edge of range the feed breaks up into random-colour
 noise and sometimes drops to black and white.
 
-Ten more mods work with it, each on its own or all together in the
+Twelve more mods work with it, each on its own or all together in the
 zone-fpv-mods zip: fpv_osd, a Betaflight, BrainFPV or INAV-style OSD;
 battery_sag, a flight pack that drains and sags; pilot_audio, which makes
 the quad sound as it would from where you stand - quieter and duller with
 distance, left or right, with doppler; throttle_fix, which stops the
 throttle reading half at the start so you can arm straight away; drones,
 every drone's props, frame and motors in one place, and more drones set up
-one block each - weight, thrust, drag, camera, battery - with a
-Meteor75 Pro II ready to add (commented out in my_drones.cfg); rotor_drag,
-the drag of the props themselves, so a whoop stops where a real one would
-instead of sliding on past the gap; dirty_air, prop wash in your own wake,
-the air you leave behind, and the cushion of the floor and pull of a
-ceiling; motor_response, motors that answer the throttle as real ones do;
+one block each - weight, thrust, drag, camera, battery - with a Meteor75 Pro
+II ready to add (commented out in my_drones.cfg); rotor_drag, the drag of
+the props themselves, so a whoop stops where a real one would instead of
+sliding on past the gap; dirty_air, prop wash in your own wake, the air you
+leave behind, and the cushion of the floor and pull of a ceiling;
 flight_controller (off until you turn it on), Betaflight's PIDs and mixer
-turning the quad with its four motors; and mod_settings, all their settings
-- this one's too - in the pause menu and over the picture (F9), with the
-changes showing as you make them.
+turning the quad with its four motors; prop_damage (off until you turn it
+on), props that chip, wear and break when they hit things; mode_3d (off
+until you turn it on), motors that turn both ways, as with Betaflight's 3D
+mode; player_list, the game's list of the other players out of the way until
+you want it, and who joins and leaves in the chat; and mod_settings, all
+their settings - this one's too - in the pause menu and over the picture
+(F9), with the changes showing as you make them.
 
 
 INSTALL

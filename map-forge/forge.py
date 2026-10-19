@@ -206,6 +206,12 @@ def main():
                         '0.10). Exposure is strongly bimodal - on de_nuke 2065 '
                         'sides are 0 %% and 2542 are 100 %% - so this mainly '
                         'decides whether partly-covered roofs get closed.')
+    p.add_argument('--sky', choices=['walls', 'none'], default=None,
+                   help="the map's sky brushes: 'walls' (the default) keeps them as solid "
+                        "zone_sky surfaces that hide the rest of the map, as in the "
+                        "original, with the game's sky drawn on them by the map_sky mod "
+                        "(a plain sky colour without it); 'none' leaves them out. "
+                        "Left out by default with --expand-3d-skybox")
     p.add_argument('--expand-3d-skybox', action='store_true',
                    help="keep the map's 3D skybox and blow it up to full size "
                         "instead of deleting it, using sky_camera's own "
@@ -258,10 +264,37 @@ def main():
                         'clips. Raise it for a brighter map')
     p.add_argument('--bake-page', type=int, default=2048, metavar='PX',
                    help='atlas page size (default 2048)')
+    p.add_argument('--bake-adapt', type=float, default=None, metavar='S',
+                   help='local exposure for the dark areas: each point\'s '
+                        'light is lifted by how dark its neighbourhood is, as '
+                        'Source\'s auto exposure and an eye adapt, so a dim '
+                        'room comes up as a whole and keeps its own shading. '
+                        'Default 0.6; 0 = off (the old look). See "Dark areas" '
+                        'in the README')
+    p.add_argument('--bake-adapt-max', type=float, default=None, metavar='X',
+                   help='the most --bake-adapt lifts a neighbourhood '
+                        '(default 4x)')
+    p.add_argument('--bake-pedestal', type=float, default=None, metavar='P',
+                   help='the least light anything gets, as a share of fully '
+                        'lit (default 0.03), added under the light instead of '
+                        'clamping it, so the darkest corners keep their '
+                        'gradients')
     p.add_argument('--bake-exposure', type=float, default=None, metavar='F',
                    help='multiplier from Source light units to 0-1. The '
                         'default puts the 98th percentile of the map\'s own '
                         'luminance at 1.0; it is reported as light_scale')
+    p.add_argument('--solid-fake-brushes', action='store_true',
+                   help="make never-solid brush entities (func_illusionary, func_brush with "
+                        'Solidity "never") solid like the rest of the map, as before. By '
+                        'default they are drawn but flown through, as in Source: doorway '
+                        'portal planes, fake walls and floors, curtains, foliage')
+    p.add_argument('--sink-fills', action='store_true',
+                   help='rebuilt hidden faces that overlap a drawn one are sunk 6.4 mm '
+                        'behind it whole, as before, instead of cut around it (the sunk '
+                        'edges leave white seams; for comparison only)')
+    p.add_argument('--no-tjunctions', action='store_true',
+                   help="leave T-junctions open (a corner lying on another face's edge "
+                        'draws as a dotted crack along the seam; closed by default)')
     p.add_argument('--no-props', action='store_true', help='skip static props')
     p.add_argument('--no-prop-ents', action='store_true',
                    help='skip prop_dynamic / prop_physics entities')
@@ -435,7 +468,7 @@ def main():
         sky_energy=a.energy, recenter=not a.no_recenter,
         variations=tuple(x.strip() for x in a.variations.split(',') if x.strip()),
         require_content=not a.allow_missing_content,
-        doors=a.doors, breakables=a.breakables,
+        doors=a.doors, breakables=a.breakables, tjunctions=not a.no_tjunctions, cut_fills=not a.sink_fills, pass_never_solid=not a.solid_fake_brushes,
         light_effects=a.keep_light_effects,
         metal_sheen=a.metal_sheen, detail=not a.no_detail,
         normal_strength=a.normal_strength, blend_bands=a.blend_bands,
@@ -443,12 +476,13 @@ def main():
         water_roughness=a.water_roughness, water_value=a.water_value,
         rebuild_culled=not a.no_rebuild_culled, min_exposed=a.min_exposed,
         roughness_min=a.roughness_min,
-        skybox_cut=a.skybox_cut, expand_skybox=a.expand_3d_skybox,
+        skybox_cut=a.skybox_cut, expand_skybox=a.expand_3d_skybox, sky=a.sky,
         bsp_bytes=bsp_bytes, archives=archives,
         bake_lightmaps=a.bake_lightmaps, bake_texel_cm=a.bake_texel,
         flat_normals=_flat_normal(a.flat_normals),
         bake_page=a.bake_page, bake_exposure=a.bake_exposure,
-        bake_brightness=a.bake_brightness)
+        bake_brightness=a.bake_brightness, bake_adapt=a.bake_adapt,
+        bake_adapt_max=a.bake_adapt_max, bake_pedestal=a.bake_pedestal)
 
     if install_dir:
         import shutil

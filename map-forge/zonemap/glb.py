@@ -75,11 +75,13 @@ class Glb:
 
     # ---- geometry --------------------------------------------------------
     def mesh(self, name, prims):
-        """prims: (pos, nrm|None, uv|None, idx, material_index[, uv2|None])"""
+        """prims: (pos, nrm|None, uv|None, idx, material_index[, uv2|None[,
+        colour|None]])"""
         out = []
         for prim in prims:
             pos, nrm, uv, idx, mat = prim[:5]
             uv2 = prim[5] if len(prim) > 5 else None
+            col = prim[6] if len(prim) > 6 else None
             attrs = {'POSITION': self._acc(np.asarray(pos, '<f4'), F32, 'VEC3',
                                            34962, minmax=True)}
             if nrm is not None:
@@ -88,6 +90,9 @@ class Glb:
                 attrs['TEXCOORD_0'] = self._acc(np.asarray(uv, '<f4'), F32, 'VEC2', 34962)
             if uv2 is not None:
                 attrs['TEXCOORD_1'] = self._acc(np.asarray(uv2, '<f4'), F32, 'VEC2', 34962)
+            if col is not None:
+                col = np.asarray(col, '<f4')
+                attrs['COLOR_0'] = self._acc(col, F32, 'VEC4' if col.shape[1] == 4 else 'VEC3', 34962)
             idx = np.asarray(idx, '<u4').reshape(-1)
             p = {'attributes': attrs,
                  'indices': self._acc(idx, U32, 'SCALAR', 34963), 'mode': 4}
