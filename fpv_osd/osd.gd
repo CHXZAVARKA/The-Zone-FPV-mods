@@ -599,7 +599,8 @@ func setup(dir: String, core: Node, live := false) -> String:
 		if opacity < 1.0:
 			xh += ", opacity %s" % str(snappedf(opacity, 0.01))
 		if float(cfg["crosshair_offset"]) != 0.0:
-			xh += ", %+g%% of the picture up" % float(cfg["crosshair_offset"])
+			var up := snappedf(float(cfg["crosshair_offset"]), 0.01)
+			xh += ", %s%% of the picture %s" % [str(absf(up)), "up" if up > 0.0 else "down"]
 	var hz := []
 	var on_cam := " on the real horizon (camera uptilt allowed for)" if bool(cfg["horizon_uptilt"]) else ""
 	if bool(cfg["show_horizon"]) and _hz_style == "brainfpv":

@@ -16,7 +16,8 @@ extends RefCounted
 const DIR := "res://drones/"
 const KEYS := ["prop_mm", "ducted", "wheelbase_mm", "motor_ms", "wash", "wake"]
 const NAMES := {
-	"65mm_freestyle": "65mm Whoop", "85mm_freestyle": "85mm Whoop", "2.5in_freestyle": "2.5\" Freestyle",
+	"65mm_freestyle": "65mm Whoop", "75mm_freestyle": "75mm Whoop",
+	"85mm_freestyle": "85mm Whoop", "2.5in_freestyle": "2.5\" Freestyle",
 	"3.5in_freestyle": "3.5\" Freestyle", "5in_freestyle": "5\" Freestyle", "beginner_5_in_quad": "Beginner 5\"",
 	"5in_racer": "5\" Racer", "other": "any other quad",
 }
