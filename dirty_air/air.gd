@@ -74,11 +74,13 @@ extends Node
 ## filter per component, the gusts' size along the wind about 30 m, up and
 ## down about 5 m, swept past at the wind's speed and the quad's), about 22%
 ## of the wind's speed along and across it and 12% up and down at
-## turbulence=1. With the game's wind off, what is left is the room's own
-## air: the quad's wash spread through it, off the floor and the walls, not
-## settling between passes - a floor under the gusts of a third of the props'
-## hover wake speed, so each drone stirs as much as it moves, and with no
-## mean to it, so the air churns without the quad being pushed along. In the
+## turbulence=1. With the game's wind off, what is left is air that is never
+## perfectly still - a calm day outdoors still moves, and indoors the quad's
+## own wash does not settle between passes: a floor under the gusts of a
+## third of the props' hover wake speed, so it is each drone's own size, and
+## with no mean to it, so the air moves without a wind to lean on. Its
+## eddies are the ones above, wider than the frame, so it pushes and bobs
+## the quad more than it rocks it. In the
 ## lee of a building or wall (a ray 20 m upwind) the game's own wind drops
 ## (its shelter test) but the air churns: gusts of 30% of the open wind, in
 ## eddies the size of the gap to the obstacle. The up-and-down gusts reach the
@@ -179,8 +181,7 @@ const LEE_GUST := 0.30          # gusts there, over the open wind's speed
 # the wind's gusts, as a part of the props' hover wake speed, so each drone
 # makes as much of it as it moves air. It has no mean, only gusts, so it
 # churns the air without a wind to lean on.
-const ROOM_AIR := 0.35
-const ROOM_EDDY := 2.0          # its eddies, in frame radii: the quad's own size
+const AMBIENT_AIR := 0.35       # still air's own gusts, over the hover wake speed
 
 var cfg := {}
 var _specs = null            # the drones mod's specs.gd, or null without it
@@ -834,13 +835,15 @@ func _gusts(body: RigidBody3D, gs: Node, dt: float) -> void:
 	var zs := get_node_or_null("/root/ZSettings")
 	var game_kph = zs.get("WIND_SPEED_KPH") if zs != null else null
 	var game_on: bool = game_kph != null and float(game_kph) > 0.0
-	# The air a quad flies in is never still, wind or no wind: its own wash
-	# spreads through the room, off the floor and the walls, and does not
-	# settle between passes. That is kept as a floor under the wind's own
-	# gusts, a part of the props' hover wake speed, so it is the drone's
-	# own size - and with no mean to it, so it churns the air without
-	# pushing the quad anywhere.
-	var room := ROOM_AIR * hover_wake(float(body.mass))
+	# Air is never perfectly still: even a calm day outdoors moves, and
+	# indoors the quad's own wash does not settle between passes. That is a
+	# floor under the wind's own gusts, a part of the props' hover wake
+	# speed, so it is the drone's own size - and with no mean to it, so the
+	# air moves without a wind to lean on. Its eddies are the ones above,
+	# wider than the frame, so it pushes and bobs the quad more than it
+	# rocks it: the props meet nearly the same air, about a seventh of it
+	# apart (a turbulent cascade over the gap between them gives a fifth).
+	var room := AMBIENT_AIR * hover_wake(float(body.mass))
 	if not game_on and room <= 0.0:
 		if _wind_written != null:
 			_restore_wind()
@@ -881,14 +884,6 @@ func _gusts(body: RigidBody3D, gs: Node, dt: float) -> void:
 	var sw := lerpf(GUST_W, LEE_GUST, lee) * open * turb
 	var lu := lerpf(GUST_LU, _lee_gap, lee)
 	var lw := lerpf(GUST_LW, _lee_gap, lee)
-	if not game_on:
-		# The room's air is stirred by the quad, so its eddies are the quad's
-		# own size and not the sky's 30 m and 5 m. That matters twice over:
-		# eddies wider than the frame lift all four props together, which
-		# only bobs the quad, and they go by too slowly to be felt as the
-		# air being rough. At the sky's size the props would share 99% of it.
-		lw = maxf(ROOM_EDDY * _frame, 0.08)
-		lu = 4.0 * lw
 	# the eddies go by at the open wind's speed (in a building's lee they
 	# churn at the pace of the wind round it) or the quad's through them
 	var sweep := maxf(maxf((body.linear_velocity - mean).length(), open), 1.0)
