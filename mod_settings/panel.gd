@@ -118,7 +118,8 @@ func refresh(fresh := false) -> void:
 	if fresh:
 		_pick.clear()
 	_mods = host.mod_ids()
-	_pages = [FEEL_ID] + _mods
+	_pages = [FEEL_ID]
+	_pages.append_array(_mods)
 	if _sel == "" or not _sel in _pages:
 		_sel = _pages[0]
 	if _picker != null:
