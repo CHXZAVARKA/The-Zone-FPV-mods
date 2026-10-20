@@ -104,7 +104,7 @@ extends Node
 
 const RHO := 1.225
 const DEFAULTS := {"descent": 1.0, "wake": 1.0, "wash": 1.0, "shake": 0.0, "ground_effect": 1.0, "ceiling_effect": 1.0,
-	"others_wake": false, "gusts": false, "wind_kph": 0, "turbulence": 1.0, "log_flight": false}
+	"others_wake": false, "gusts": true, "wind_kph": 0, "turbulence": 1.0, "log_flight": false}
 const BOOLS := ["others_wake", "gusts", "log_flight"]
 
 # The flight log (log_flight): what the air did and how hard it shook the
