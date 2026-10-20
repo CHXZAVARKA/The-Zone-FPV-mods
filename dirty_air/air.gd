@@ -80,7 +80,9 @@ extends Node
 ## third of the props' hover wake speed, so it is each drone's own size, and
 ## with no mean to it, so the air moves without a wind to lean on. Its
 ## eddies are the ones above, wider than the frame, so it pushes and bobs
-## the quad more than it rocks it. In the
+## the quad more than it rocks it; what rocking is left is set so that in
+## clean air it comes to about what a real whoop's blackbox shows outdoors.
+## In the
 ## lee of a building or wall (a ray 20 m upwind) the game's own wind drops
 ## (its shelter test) but the air churns: gusts of 30% of the open wind, in
 ## eddies the size of the gap to the obstacle. The up-and-down gusts reach the
@@ -181,7 +183,12 @@ const LEE_GUST := 0.30          # gusts there, over the open wind's speed
 # the wind's gusts, as a part of the props' hover wake speed, so each drone
 # makes as much of it as it moves air. It has no mean, only gusts, so it
 # churns the air without a wind to lean on.
-const AMBIENT_AIR := 0.35       # still air's own gusts, over the hover wake speed
+# Still air's own gusts, over the props' hover wake speed. Measured: at a
+# third of it the quad's pitch and roll in clean air came to half of what a
+# real whoop's blackbox shows outdoors, and at this it comes to within a
+# tenth of it (69 s and 44 s of flight, the band 8-63 Hz, against the same
+# filter run over the blackbox at matched crossflow).
+const AMBIENT_AIR := 1.05
 
 var cfg := {}
 var _specs = null            # the drones mod's specs.gd, or null without it
@@ -395,6 +402,8 @@ func _lg_write() -> void:
 	out.append("    descent %s, wake %s, wash %s, shake %s; its own wash %s and wake %s" % [
 		str(cfg["descent"]), str(cfg["wake"]), str(cfg["wash"]), str(cfg["shake"]),
 		str(drone.get("wash", 1.0)), str(drone.get("wake", 1.0))])
+	out.append("    gusty wind %s, turbulence %s, wind %s kph" % [
+		"on" if cfg["gusts"] else "off", str(cfg["turbulence"]), str(cfg["wind_kph"])])
 	out.append("         Vz/vh      s   vx/vh   wash_level     sigma    pitch and roll")
 	for i in LOG_BINS:
 		var n := int(_lg_n[i])
