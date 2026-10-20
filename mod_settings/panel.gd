@@ -15,9 +15,12 @@ const WARN := Color(1.0, 0.78, 0.35)
 const GOOD := Color(0.55, 0.9, 0.55)
 const BAD := Color(1.0, 0.45, 0.4)
 
+const FEEL_ID := "*feel"      # the flight feel page: not a mod, so not a folder name
+
 var host = null               # main.gd
 var compact := false
 var _mods: Array = []         # ids, in order
+var _pages: Array = []        # what the list offers: FEEL_ID, then the mods
 var _sel := ""
 var _picker: OptionButton = null
 var _list: VBoxContainer = null
@@ -49,7 +52,7 @@ func build(h, is_compact: bool, title_hint: String) -> void:
 		x.pressed.connect(func(): back.emit())
 		bar.add_child(x)
 		_picker = OptionButton.new()
-		_picker.item_selected.connect(func(i): _select(_mods[i]))
+		_picker.item_selected.connect(func(i): _select(_pages[i]))
 		add_child(_picker)
 		bar = HBoxContainer.new()
 		bar.name = "SaveBar"
@@ -115,26 +118,27 @@ func refresh(fresh := false) -> void:
 	if fresh:
 		_pick.clear()
 	_mods = host.mod_ids()
-	if _sel == "" or not _sel in _mods:
-		_sel = _mods[0] if not _mods.is_empty() else ""
+	_pages = [FEEL_ID] + _mods
+	if _sel == "" or not _sel in _pages:
+		_sel = _pages[0]
 	if _picker != null:
 		_picker.clear()
-		for id in _mods:
-			_picker.add_item(host.mod_title(id))
+		for id in _pages:
+			_picker.add_item(_page_title(id))
 		if _sel != "":
-			_picker.select(_mods.find(_sel))
+			_picker.select(_pages.find(_sel))
 	if _list != null:
 		for c in _list.get_children():
 			_list.remove_child(c)
 			c.queue_free()
-		for id in _mods:
+		for id in _pages:
 			var b := Button.new()
-			b.text = host.mod_title(id)
+			b.text = _page_title(id)
 			b.toggle_mode = true
 			b.button_pressed = id == _sel
 			b.alignment = HORIZONTAL_ALIGNMENT_LEFT
 			b.pressed.connect(_select.bind(id))
-			if not host.mod_loaded(id):
+			if id != FEEL_ID and not host.mod_loaded(id):
 				b.modulate = DIM
 			_list.add_child(b)
 	var at := _scroll.scroll_vertical
@@ -143,13 +147,63 @@ func refresh(fresh := false) -> void:
 	update_state()
 
 
+func _page_title(id: String) -> String:
+	return "Flight feel" if id == FEEL_ID else str(host.mod_title(id))
+
+
+## The settings that change how the quad flies, gathered from whichever mods
+## have them, each still written to the mod it belongs to. A heading says
+## which mod a row came from, so it can be found again on its own page.
+func _show_feel(base: int) -> void:
+	var head := Label.new()
+	head.text = "Flight feel"
+	head.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	head.custom_minimum_size = Vector2(120, 0)
+	head.add_theme_font_size_override("font_size", int(base * 1.3))
+	_body.add_child(head)
+	var rows: Array = host.feel_rows()
+	var st := Label.new()
+	st.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	st.custom_minimum_size = Vector2(120, 0)
+	st.modulate = DIM
+	if rows.is_empty():
+		st.text = "None of the mods these come from are installed."
+		_body.add_child(st)
+		return
+	st.text = "What the air, the flight controller and the battery do, from "\
+		+ "whichever mod owns each. Each drone's own props, frame and motors "\
+		+ "are on the drones page, a drone at a time."
+	_body.add_child(st)
+	var mod := ""
+	for r in rows:
+		var id := str(r["id"])
+		if id != mod:
+			mod = id
+			_body.add_child(HSeparator.new())
+			var h := Label.new()
+			h.text = _page_title(id)
+			h.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			h.custom_minimum_size = Vector2(120, 0)
+			h.add_theme_font_size_override("font_size", int(base * 1.12))
+			if not host.mod_loaded(id):
+				h.modulate = DIM
+			_body.add_child(h)
+			var ms := Label.new()
+			ms.text = str(host.mod_status(id))
+			ms.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			ms.custom_minimum_size = Vector2(120, 0)
+			ms.modulate = DIM
+			_body.add_child(ms)
+		_body.add_child(_row(id, r["item"], str(r["raw"])))
+
+
 func _select(id: String) -> void:
 	_sel = id
-	if _picker != null and _mods.find(id) >= 0 and _picker.selected != _mods.find(id):
-		_picker.select(_mods.find(id))
+	if _picker != null and _pages.find(id) >= 0 and _picker.selected != _pages.find(id):
+		_picker.select(_pages.find(id))
 	if _list != null:
 		for i in _list.get_child_count():
-			(_list.get_child(i) as Button).button_pressed = i < _mods.size() and _mods[i] == id
+			(_list.get_child(i) as Button).button_pressed = i < _pages.size() and _pages[i] == id
 	_show(id)
 	_scroll.scroll_vertical = 0
 
@@ -176,6 +230,9 @@ func _show(id: String) -> void:
 	if id == "":
 		return
 	var base := get_theme_default_font_size()
+	if id == FEEL_ID:
+		_show_feel(base)
+		return
 	var head := Label.new()
 	head.text = host.mod_title(id)
 	head.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART

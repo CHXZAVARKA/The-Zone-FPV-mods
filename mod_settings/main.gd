@@ -36,6 +36,29 @@ const PANEL := preload("res://mod_settings/panel.gd")
 const PAUSE_SCRIPT := "res://menus/pause_menu/pause_menu"
 const DEFAULTS := {"hotkey": "F9", "overlay_width": 480}
 
+## The settings that change how the quad flies, wherever they live: one page
+## instead of the seven a player would go through to find them. A mod that is
+## not installed, or a setting it no longer has, drops out rather than showing
+## as missing - so this list going stale costs a row, not an error.
+const FEEL := [
+	{"mod": "flight_controller", "section": "mod", "key": "enabled"},
+	{"mod": "flight_controller", "section": "flight_controller", "key": "airmode"},
+	{"mod": "flight_controller", "section": "flight_controller", "key": "gyro_noise"},
+	{"mod": "dirty_air", "section": "mod", "key": "enabled"},
+	{"mod": "dirty_air", "section": "dirty_air", "key": "descent"},
+	{"mod": "dirty_air", "section": "dirty_air", "key": "wash"},
+	{"mod": "dirty_air", "section": "dirty_air", "key": "wake"},
+	{"mod": "dirty_air", "section": "dirty_air", "key": "gusts"},
+	{"mod": "dirty_air", "section": "dirty_air", "key": "turbulence"},
+	{"mod": "dirty_air", "section": "dirty_air", "key": "wind_kph"},
+	{"mod": "dirty_air", "section": "dirty_air", "key": "ground_effect"},
+	{"mod": "rotor_drag", "section": "mod", "key": "enabled"},
+	{"mod": "rotor_drag", "section": "rotor_drag", "key": "strength"},
+	{"mod": "battery_sag", "section": "mod", "key": "enabled"},
+	{"mod": "battery_sag", "section": "battery", "key": "sag_effect"},
+	{"mod": "prop_damage", "section": "mod", "key": "enabled"},
+]
+
 var cfg := {}
 var _core: Node = null
 var _mods := {}               # id -> {name, version, def, model}
@@ -413,6 +436,28 @@ func _path(id: String) -> String:
 
 func mod_ids() -> Array:
 	return _order.duplicate()
+
+
+## FEEL as rows to draw: [{id, item, raw}], in the order above. The drone's own
+## props, frame and motors are not here - they are a section per drone, which
+## the drones page already shows one at a time.
+func feel_rows() -> Array:
+	var out := []
+	for want in FEEL:
+		var id := str(want["mod"])
+		if not _mods.has(id):
+			continue
+		var vals: Dictionary = values(id)
+		for item in model(id):
+			if str(item.get("kind", "")) != "value":
+				continue
+			if str(item.get("file", "")) != "":
+				continue
+			if str(item["section"]) != str(want["section"]) or str(item["key"]) != str(want["key"]):
+				continue
+			out.append({"id": id, "item": item, "raw": vals.get(key_of(item), item["default"])})
+			break
+	return out
 
 
 func mod_title(id: String) -> String:
