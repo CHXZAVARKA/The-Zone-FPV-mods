@@ -66,14 +66,19 @@ extends Node
 ## nearest few within 40 m count; fly behind or under one and its air takes
 ## your lift and shakes you as your own does.
 ##
-## Gusty wind (gusts): the game's wind (/set wind_speed in its chat) is one
-## steady push the same everywhere, swelling slowly; off, there is none. This
-## gives the air turbulence: random gusts along, across and up and down the
+## Gusty wind (gusts): the air is not still. The game's wind (/set wind_speed
+## in its chat) is one steady push the same everywhere, swelling slowly; off,
+## there is none. This gives the air turbulence: random gusts along, across
+## and up and down the
 ## wind, from the low-altitude model of MIL-F-8785C (a Dryden-type first-order
 ## filter per component, the gusts' size along the wind about 30 m, up and
 ## down about 5 m, swept past at the wind's speed and the quad's), about 22%
 ## of the wind's speed along and across it and 12% up and down at
-## turbulence=1. With the game's wind off there is nothing to gust. In the
+## turbulence=1. With the game's wind off, what is left is the room's own
+## air: the quad's wash spread through it, off the floor and the walls, not
+## settling between passes - a floor under the gusts of a third of the props'
+## hover wake speed, so each drone stirs as much as it moves, and with no
+## mean to it, so the air churns without the quad being pushed along. In the
 ## lee of a building or wall (a ray 20 m upwind) the game's own wind drops
 ## (its shelter test) but the air churns: gusts of 30% of the open wind, in
 ## eddies the size of the gap to the obstacle. The up-and-down gusts reach the
@@ -170,6 +175,11 @@ const GUST_LU := 30.0           # m: the gusts' size along and across (MIL-F-878
 const GUST_LW := 5.0            # m: up and down
 const LEE_REACH := 20.0         # m upwind looked along for shelter
 const LEE_GUST := 0.30          # gusts there, over the open wind's speed
+# The room's own air, stirred by the quad and never settling: a floor under
+# the wind's gusts, as a part of the props' hover wake speed, so each drone
+# makes as much of it as it moves air. It has no mean, only gusts, so it
+# churns the air without a wind to lean on.
+const ROOM_AIR := 0.35
 
 var cfg := {}
 var _specs = null            # the drones mod's specs.gd, or null without it
@@ -233,6 +243,7 @@ var _lg_n: Array = []
 var _lg_wl: Array = []
 var _lg_sig: Array = []
 var _lg_r2: Array = []
+var _lg_vx: Array = []          # vx/vh: flying across clears the wake
 var _lg_time := 0.0
 var _lg_ticks := 0
 var _lg_hp := Vector2.ZERO      # what is below the band, in two stages
@@ -328,11 +339,13 @@ func _lg_reset() -> void:
 	_lg_wl = []
 	_lg_sig = []
 	_lg_r2 = []
+	_lg_vx = []
 	for i in LOG_BINS:
 		_lg_n.append(0)
 		_lg_wl.append(0.0)
 		_lg_sig.append(0.0)
 		_lg_r2.append(0.0)
+		_lg_vx.append(0.0)
 	_lg_time = 0.0
 	_lg_ticks = 0
 	_lg_hp = Vector2.ZERO
@@ -343,7 +356,7 @@ func _lg_reset() -> void:
 # One tick into the flight log: the quad's own pitch and roll rate, with the
 # pilot's input filtered out below the band and the tick rate's own steps
 # above it, binned by the descent it was met at.
-func _lg_tick(body: RigidBody3D, basis: Basis, dt: float) -> void:
+func _lg_tick(body: RigidBody3D, basis: Basis, dt: float, across: float) -> void:
 	var w: Vector3 = body.angular_velocity * basis
 	var rate := Vector2(w.x, w.z)
 	# two high-pass stages: one leaves too much of the pilot's own input in
@@ -358,6 +371,7 @@ func _lg_tick(body: RigidBody3D, basis: Basis, dt: float) -> void:
 	_lg_wl[i] = float(_lg_wl[i]) + wash_level
 	_lg_sig[i] = float(_lg_sig[i]) + vrs_sigma
 	_lg_r2[i] = float(_lg_r2[i]) + _lg_lp.length_squared()
+	_lg_vx[i] = float(_lg_vx[i]) + across
 	_lg_time += dt
 	_lg_ticks += 1
 
@@ -379,15 +393,15 @@ func _lg_write() -> void:
 	out.append("    descent %s, wake %s, wash %s, shake %s; its own wash %s and wake %s" % [
 		str(cfg["descent"]), str(cfg["wake"]), str(cfg["wash"]), str(cfg["shake"]),
 		str(drone.get("wash", 1.0)), str(drone.get("wake", 1.0))])
-	out.append("         Vz/vh      s   wash_level     sigma    pitch and roll")
+	out.append("         Vz/vh      s   vx/vh   wash_level     sigma    pitch and roll")
 	for i in LOG_BINS:
 		var n := int(_lg_n[i])
 		if n < LOG_LEAST:
 			continue
 		var lo := LOG_LOW + i * LOG_STEP
-		out.append("  %+5.2f..%+5.2f %6.2f %12.3f %8.2f%% %10.1f deg/s" % [
-			lo, lo + LOG_STEP, float(n) / fs, float(_lg_wl[i]) / n,
-			float(_lg_sig[i]) / n * 100.0,
+		out.append("  %+5.2f..%+5.2f %6.2f %7.2f %12.3f %8.2f%% %10.1f deg/s" % [
+			lo, lo + LOG_STEP, float(n) / fs, float(_lg_vx[i]) / n,
+			float(_lg_wl[i]) / n, float(_lg_sig[i]) / n * 100.0,
 			rad_to_deg(sqrt(float(_lg_r2[i]) / (2.0 * n)))])
 	var f := FileAccess.open(_log_path, FileAccess.READ_WRITE)
 	if f == null:
@@ -780,7 +794,7 @@ func _physics_process(dt: float) -> void:
 	wash_level = clampf((sigma + gusts) / (VRS_SIGMA * rough), 0.0, 2.0)
 
 	if bool(cfg["log_flight"]):
-		_lg_tick(body, basis, dt)
+		_lg_tick(body, basis, dt, vx / vh)
 
 	# leave some wake: as the props sink into it the vortex ring state above
 	# takes over, so hand over to it where it has come in rather than at a
@@ -819,7 +833,14 @@ func _gusts(body: RigidBody3D, gs: Node, dt: float) -> void:
 	var zs := get_node_or_null("/root/ZSettings")
 	var game_kph = zs.get("WIND_SPEED_KPH") if zs != null else null
 	var game_on: bool = game_kph != null and float(game_kph) > 0.0
-	if not game_on:
+	# The air a quad flies in is never still, wind or no wind: its own wash
+	# spreads through the room, off the floor and the walls, and does not
+	# settle between passes. That is kept as a floor under the wind's own
+	# gusts, a part of the props' hover wake speed, so it is the drone's
+	# own size - and with no mean to it, so it churns the air without
+	# pushing the quad anywhere.
+	var room := ROOM_AIR * hover_wake(float(body.mass))
+	if not game_on and room <= 0.0:
 		if _wind_written != null:
 			_restore_wind()
 		return
@@ -852,7 +873,8 @@ func _gusts(body: RigidBody3D, gs: Node, dt: float) -> void:
 	# the game shelters its own wind (to a twentieth, behind something
 	# upwind); the gusts go with the open wind's speed
 	var mean := _wind_base
-	var open := maxf(_wind_base.length(), float(game_kph) / 3.6 * sqrt(2.0))
+	var kph := float(game_kph) if game_on else 0.0
+	var open := maxf(maxf(_wind_base.length(), kph / 3.6 * sqrt(2.0)), room)
 	var turb := float(cfg["turbulence"])
 	var su := lerpf(GUST_U, LEE_GUST, lee) * open * turb
 	var sw := lerpf(GUST_W, LEE_GUST, lee) * open * turb
