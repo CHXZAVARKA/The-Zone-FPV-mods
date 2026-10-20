@@ -180,6 +180,7 @@ const LEE_GUST := 0.30          # gusts there, over the open wind's speed
 # makes as much of it as it moves air. It has no mean, only gusts, so it
 # churns the air without a wind to lean on.
 const ROOM_AIR := 0.35
+const ROOM_EDDY := 2.0          # its eddies, in frame radii: the quad's own size
 
 var cfg := {}
 var _specs = null            # the drones mod's specs.gd, or null without it
@@ -880,6 +881,14 @@ func _gusts(body: RigidBody3D, gs: Node, dt: float) -> void:
 	var sw := lerpf(GUST_W, LEE_GUST, lee) * open * turb
 	var lu := lerpf(GUST_LU, _lee_gap, lee)
 	var lw := lerpf(GUST_LW, _lee_gap, lee)
+	if not game_on:
+		# The room's air is stirred by the quad, so its eddies are the quad's
+		# own size and not the sky's 30 m and 5 m. That matters twice over:
+		# eddies wider than the frame lift all four props together, which
+		# only bobs the quad, and they go by too slowly to be felt as the
+		# air being rough. At the sky's size the props would share 99% of it.
+		lw = maxf(ROOM_EDDY * _frame, 0.08)
+		lu = 4.0 * lw
 	# the eddies go by at the open wind's speed (in a building's lee they
 	# churn at the pace of the wind round it) or the quad's through them
 	var sweep := maxf(maxf((body.linear_velocity - mean).length(), open), 1.0)
@@ -898,7 +907,7 @@ func _gusts(body: RigidBody3D, gs: Node, dt: float) -> void:
 	# much bigger than the frame
 	var gap := 2.0 * absf((_local[0] as Vector3).x) if not _local.is_empty() else 0.1
 	var own := sw * sqrt(maxf(1.0 - exp(-2.0 * gap / lw), 0.0))
-	var kp := minf(dt * sweep / maxf(0.5 * lw, 0.5), 1.0)
+	var kp := minf(dt * sweep / maxf(0.5 * lw, minf(0.5, lw)), 1.0)
 	for i in 4:
 		_turb_p[i] += -float(_turb_p[i]) * kp + own * sqrt(2.0 * kp) * _gauss()
 
