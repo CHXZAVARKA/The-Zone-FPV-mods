@@ -95,8 +95,21 @@ extends Node
 
 const RHO := 1.225
 const DEFAULTS := {"descent": 1.0, "wake": 1.0, "wash": 1.0, "shake": 0.0, "ground_effect": 1.0, "ceiling_effect": 1.0,
-	"others_wake": false, "gusts": false, "wind_kph": 0, "turbulence": 1.0}
-const BOOLS := ["others_wake", "gusts"]
+	"others_wake": false, "gusts": false, "wind_kph": 0, "turbulence": 1.0, "log_flight": false}
+const BOOLS := ["others_wake", "gusts", "log_flight"]
+
+# The flight log (log_flight): what the air did and how hard it shook the
+# quad, in bins of the descent it was met at, so a flight here can be set
+# beside a blackbox from a real quad. The rate is band-passed: above
+# LOG_HP_HZ, which leaves the pilot's own input below it, and below a tenth
+# of the tick rate or LOG_LP_HZ, whichever is lower, so the band is always
+# one the tick rate can carry. The log says which band it used.
+const LOG_LOW := -2.0           # the lowest Vz/vh binned
+const LOG_STEP := 0.1
+const LOG_BINS := 22
+const LOG_HP_HZ := 8.0
+const LOG_LP_HZ := 120.0
+const LOG_LEAST := 10           # bins with fewer ticks than this are left out
 
 # each drone's props and frame: drones/settings.cfg, shared with the
 # other mods
@@ -213,6 +226,18 @@ var _wfree := PackedByteArray()
 var _wnext := 0
 var _wlast_t := -1.0
 var _wlast_p := Vector3.ZERO
+# the flight log: ticks, wash_level, vrs_sigma and the square of the
+# band-passed pitch and roll rate, summed per bin of Vz/vh
+var _log_path := ""
+var _lg_n: Array = []
+var _lg_wl: Array = []
+var _lg_sig: Array = []
+var _lg_r2: Array = []
+var _lg_time := 0.0
+var _lg_ticks := 0
+var _lg_hp := Vector2.ZERO      # what is below the band, in two stages
+var _lg_hp2 := Vector2.ZERO
+var _lg_lp := Vector2.ZERO      # what is in it
 var _near := PackedInt32Array()  # puffs close enough to matter, looked for every few ticks
 var _gust := [0.0, 0.0, 0.0, 0.0]
 var _gust_all := 0.0
@@ -241,7 +266,10 @@ var _gust_vec := Vector3.ZERO   # the gusts on the mean wind (m/s)
 func setup(dir: String, core: Node) -> String:
 	_core = core
 	_rng.randomize()
-	_cfg_path = OS.get_executable_path().get_base_dir().path_join(dir.trim_suffix("/").get_file()).path_join("settings.cfg")
+	var here := OS.get_executable_path().get_base_dir().path_join(dir.trim_suffix("/").get_file())
+	_cfg_path = here.path_join("settings.cfg")
+	_log_path = here.path_join("flight.txt")
+	_lg_reset()
 	cfg = DEFAULTS.duplicate()
 	var c := ConfigFile.new()
 	if c.load(dir + "settings.cfg") == OK and c.has_section("dirty_air"):
@@ -292,6 +320,83 @@ func use_drone(vehicle_id: String) -> void:
 	_local = [Vector3(-s, 0, -s), Vector3(s, 0, -s), Vector3(-s, 0, s), Vector3(s, 0, s)]
 	_frame = s * sqrt(2.0) + _r
 	clear_wake()
+
+
+# Empties the flight log's bins, for the next flight
+func _lg_reset() -> void:
+	_lg_n = []
+	_lg_wl = []
+	_lg_sig = []
+	_lg_r2 = []
+	for i in LOG_BINS:
+		_lg_n.append(0)
+		_lg_wl.append(0.0)
+		_lg_sig.append(0.0)
+		_lg_r2.append(0.0)
+	_lg_time = 0.0
+	_lg_ticks = 0
+	_lg_hp = Vector2.ZERO
+	_lg_hp2 = Vector2.ZERO
+	_lg_lp = Vector2.ZERO
+
+
+# One tick into the flight log: the quad's own pitch and roll rate, with the
+# pilot's input filtered out below the band and the tick rate's own steps
+# above it, binned by the descent it was met at.
+func _lg_tick(body: RigidBody3D, basis: Basis, dt: float) -> void:
+	var w: Vector3 = body.angular_velocity * basis
+	var rate := Vector2(w.x, w.z)
+	# two high-pass stages: one leaves too much of the pilot's own input in
+	var a := 1.0 - exp(-TAU * LOG_HP_HZ * dt)
+	_lg_hp += (rate - _lg_hp) * a
+	var once := rate - _lg_hp
+	_lg_hp2 += (once - _lg_hp2) * a
+	var top := minf(LOG_LP_HZ, 0.25 / maxf(dt, 1e-5))
+	_lg_lp += ((once - _lg_hp2) - _lg_lp) * (1.0 - exp(-TAU * top * dt))
+	var i := clampi(int(floor((_x - LOG_LOW) / LOG_STEP)), 0, LOG_BINS - 1)
+	_lg_n[i] = int(_lg_n[i]) + 1
+	_lg_wl[i] = float(_lg_wl[i]) + wash_level
+	_lg_sig[i] = float(_lg_sig[i]) + vrs_sigma
+	_lg_r2[i] = float(_lg_r2[i]) + _lg_lp.length_squared()
+	_lg_time += dt
+	_lg_ticks += 1
+
+
+# Writes the flight log on disarming: a line per bin of the descent, with the
+# wake's own figures and the rate it shook the quad at. Appended, so flights
+# at different settings can be set side by side.
+func _lg_write() -> void:
+	if _log_path == "" or _lg_ticks < 60:
+		return
+	var fs := float(_lg_ticks) / maxf(_lg_time, 1e-6)
+	var top := minf(LOG_LP_HZ, 0.25 * fs)
+	var out := PackedStringArray()
+	out.append("")
+	out.append("--- %s: %.1f s armed, %.0f ticks a second, band %.0f-%.0f Hz%s" % [
+		str(drone.get("name", drone_id)), _lg_time, fs, LOG_HP_HZ, top,
+		"" if top >= 2.0 * LOG_HP_HZ else "  (the ticks are too few for the whole band:"
+			+ " the rate below is only the low end of the prop wash)"])
+	out.append("    descent %s, wake %s, wash %s, shake %s; its own wash %s and wake %s" % [
+		str(cfg["descent"]), str(cfg["wake"]), str(cfg["wash"]), str(cfg["shake"]),
+		str(drone.get("wash", 1.0)), str(drone.get("wake", 1.0))])
+	out.append("         Vz/vh      s   wash_level     sigma    pitch and roll")
+	for i in LOG_BINS:
+		var n := int(_lg_n[i])
+		if n < LOG_LEAST:
+			continue
+		var lo := LOG_LOW + i * LOG_STEP
+		out.append("  %+5.2f..%+5.2f %6.2f %12.3f %8.2f%% %10.1f deg/s" % [
+			lo, lo + LOG_STEP, float(n) / fs, float(_lg_wl[i]) / n,
+			float(_lg_sig[i]) / n * 100.0,
+			rad_to_deg(sqrt(float(_lg_r2[i]) / (2.0 * n)))])
+	var f := FileAccess.open(_log_path, FileAccess.READ_WRITE)
+	if f == null:
+		f = FileAccess.open(_log_path, FileAccess.WRITE)
+	else:
+		f.seek_end()
+	if f == null:
+		return
+	f.store_string("\n".join(out) + "\n")
 
 
 ## The props' hover wake speed (m/s) for a quad of this weight
@@ -525,6 +630,10 @@ func _physics_process(dt: float) -> void:
 		others_seen = 0
 	var armed: bool = p.has_method("is_armed") and bool(p.call("is_armed")) and p.get("turtle_mode_active") != true
 	if not armed:
+		if _flying:
+			if bool(cfg["log_flight"]):
+				_lg_write()
+			_lg_reset()
 		wake = 0.0
 		wake_wash = 0.0
 		wake_flow = Vector3.ZERO
@@ -669,6 +778,9 @@ func _physics_process(dt: float) -> void:
 			torque += (at - origin).cross(f)
 
 	wash_level = clampf((sigma + gusts) / (VRS_SIGMA * rough), 0.0, 2.0)
+
+	if bool(cfg["log_flight"]):
+		_lg_tick(body, basis, dt)
 
 	# leave some wake: as the props sink into it the vortex ring state above
 	# takes over, so hand over to it where it has come in rather than at a
