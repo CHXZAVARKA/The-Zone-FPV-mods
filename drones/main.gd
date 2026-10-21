@@ -54,7 +54,7 @@ extends Node
 ## Uninstall: delete the drones folder (rotor_drag, dirty_air,
 ## motor_response and flight_controller need it).
 
-const VERSION := "1.1"
+const VERSION := "1.2"
 const DIR := "res://drones/"
 const SPECS := preload("res://drones/specs.gd")
 
@@ -83,6 +83,8 @@ const BATTERY_KEYS := {
 	"battery_full_throttle_amps": "full_throttle_amps",
 	"battery_idle_amps": "idle_amps",
 	"battery_resistance_mohm": "resistance_mohm",
+	"battery_polarisation": "polarisation",
+	"battery_thrust_volts": "thrust_at_cell_volts",
 }
 # ... the props, in rotor_drag's and dirty_air's names
 const ROTOR_KEYS := {
@@ -132,7 +134,8 @@ var _rates: Node = null         # rates.gd: rates per drone
 const PAGE_KEYS := ["name", "description", "base", "weight", "thrust", "top_speed", "drag_left_right",
 	"drag_top_bottom", "drag_front_back", "camera_angle", "camera_fov", "camera_fisheye", "rotation", "turtle",
 	"corner_drag", "idle_rpm", "sound_pitch", "battery_mah", "battery_cells", "battery_lihv",
-	"battery_full_throttle_amps", "battery_idle_amps", "battery_resistance_mohm", "prop_mm", "ducted",
+	"battery_full_throttle_amps", "battery_idle_amps", "battery_resistance_mohm", "battery_polarisation",
+	"battery_thrust_volts", "prop_mm", "ducted",
 	"wheelbase_mm", "motor_ms", "wash", "wake", "craft_name", "hide"]
 # shown for every added drone, from the drone it is built on if its block
 # leaves them out (a change adds the line to the block)
@@ -167,7 +170,9 @@ const PAGE_NOTES := {
 	"battery_lihv": "On = LiHV (4.35 V a cell full), off = LiPo (4.20 V).",
 	"battery_full_throttle_amps": "The whole drone's draw at full thrust on a fresh pack.",
 	"battery_idle_amps": "Flight controller, receiver, camera and VTX.",
-	"battery_resistance_mohm": "A cell and its lead; higher = more sag.",
+	"battery_resistance_mohm": "The pack, its lead and plug and the board's wiring; higher = more sag at once.",
+	"battery_polarisation": "How much more it sags the longer you push, times battery_sag's usual (1); lower = sag mostly at once.",
+	"battery_thrust_volts": "The voltage a cell under full throttle that the block's thrust is for (0 = battery_sag's own, 3.6): a maker's figure measured with the pack, sagging.",
 	"craft_name": "Shown on the OSD while you fly it (fpv_osd).",
 	"hide": "On = left out of the drone list, without deleting its block. Takes effect at the next start.",
 }

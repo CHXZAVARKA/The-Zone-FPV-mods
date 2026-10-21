@@ -16,7 +16,7 @@ extends Node
 ##
 ## Uninstall: delete the flight_controller folder.
 
-const VERSION := "1.3"
+const VERSION := "1.5"
 const DIR := "res://flight_controller/"
 const GAME := "res://player_rigid_body.gdc"
 const COPY := "base/player_rigid_body.gdc"
@@ -50,15 +50,26 @@ const DRONES := {
 	"3.5in_freestyle": {"yaw_torque": 0.009, "pids": "5inch"},
 	"2.5in_freestyle": {"yaw_torque": 0.008, "pids": "5inch"},
 	"85mm_freestyle": {"yaw_torque": 0.006, "pids": "whoop"},
+	"75mm_freestyle": {"yaw_torque": 0.006, "pids": "air75"},
 	"65mm_freestyle": {"yaw_torque": 0.006, "pids": "whoop"},
 	"other": {"yaw_torque": 0.006, "pids": "whoop"},
 }
-# P, I, D, F per axis: Betaflight 4.5's defaults, and a whoop's (BETAFPV's
-# Air65 II freestyle tune)
+# P, I, D, F per axis, for a drone whose section in settings.cfg gives none
+# of its own: Betaflight 4.5's defaults, a whoop's (BETAFPV's Air65 II
+# freestyle tune) and BETAFPV's Air75 (its stock "GF 40mm" profile)
 const PIDS := {
 	"5inch": {"roll": [45.0, 80.0, 40.0, 120.0], "pitch": [47.0, 84.0, 46.0, 125.0], "yaw": [45.0, 80.0, 0.0, 120.0]},
 	"whoop": {"roll": [49.0, 79.0, 38.0, 35.0], "pitch": [59.0, 95.0, 52.0, 43.0], "yaw": [49.0, 79.0, 0.0, 35.0]},
+	"air75": {"roll": [61.0, 110.0, 37.0, 79.0], "pitch": [64.0, 115.0, 43.0, 82.0], "yaw": [61.0, 110.0, 0.0, 79.0]},
 }
+# a drone's own section can set its PIDs (roll_p .. yaw_f) and Betaflight's
+# per-profile settings (PROFILE_KEYS), over its profile's
+const PID_KEYS := ["roll_p", "roll_i", "roll_d", "roll_f", "pitch_p", "pitch_i", "pitch_d", "pitch_f",
+	"yaw_p", "yaw_i", "yaw_d", "yaw_f"]
+# What Betaflight keeps per PID profile, besides the PIDs: a [pids_<name>]
+# section may set these for the drones that fly it, over [flight_controller]'s
+const PROFILE_KEYS := ["tpa_rate", "tpa_breakpoint", "dterm_lowpass_hz", "feedforward_smoothing_hz",
+	"feedforward_max_rate_limit", "iterm_relax", "iterm_relax_cutoff", "iterm_limit", "iterm_windup"]
 # Moment of inertia as mass x (k x wheelbase)^2: open frames (a 5" at 680 g
 # about 2e-3 kg m^2 in roll, 3.5e-3 in yaw) and whoops, whose ducts carry
 # mass further out (a 28 g 65mm about 1.2e-5 and 2.2e-5, like a Crazyflie)
@@ -67,6 +78,8 @@ const GYRATION := {"open": Vector2(0.241, 0.319), "ducted": Vector2(0.318, 0.43)
 var cfg := {}
 var drones := {}
 var pids := {}
+var profile_cfg := {}            # profile name -> its own PROFILE_KEYS values
+var own_drones := {}             # sections for drones not in DRONES (the drones mod's added ones)
 var on := false
 var settings_gen := 0            # counts settings.cfg reads, for the controllers
 var _specs = null                # the drones mod's specs.gd, or null without it
@@ -95,6 +108,8 @@ func _read_settings() -> void:
 	for id in DRONES:
 		drones[id] = (DRONES[id] as Dictionary).duplicate()
 	pids = {}
+	profile_cfg = {}
+	own_drones = {}
 	for name in PIDS:
 		pids[name] = {}
 		for ax in PIDS[name]:
@@ -109,21 +124,42 @@ func _read_settings() -> void:
 		for id in drones:
 			if c.has_section(id):
 				for k in c.get_section_keys(id):
-					if drones[id].has(k):
+					if drones[id].has(k) or k in PID_KEYS or k in PROFILE_KEYS:
 						drones[id][k] = c.get_value(id, k)
-		for name in pids:
-			var sec: String = "pids_" + str(name)
-			if c.has_section(sec):
+		for sec in c.get_sections():
+			if sec.begins_with("pids_") and sec.length() > 5:
+				# a PID profile: the two built in, or one of its own (the
+				# terms it leaves out from the whoop profile)
+				var name := sec.substr(5)
+				if not pids.has(name):
+					pids[name] = {}
+					for ax in PIDS["whoop"]:
+						pids[name][ax] = (PIDS["whoop"][ax] as Array).duplicate()
 				for ax in ["roll", "pitch", "yaw"]:
 					var i := 0
 					for term in ["p", "i", "d", "f"]:
 						if c.has_section_key(sec, ax + "_" + term):
 							pids[name][ax][i] = float(c.get_value(sec, ax + "_" + term))
 						i += 1
-	_say("airmode %s, idle %s percent, TPA %s from %s, I-term relax %s at %s Hz, feedforward limit %s percent, rotor inertia %s, gyro noise %s deg/s, ground friction %s; PIDs (P/I/D/F roll, pitch, yaw) - 5inch %s, whoop %s" % [
+				for k in PROFILE_KEYS:
+					if c.has_section_key(sec, k):
+						if not profile_cfg.has(name):
+							profile_cfg[name] = {}
+						profile_cfg[name][k] = c.get_value(sec, k)
+			elif sec != "flight_controller" and sec != "mod" and not drones.has(sec):
+				# a drone of the drones mod's, by its id: its own yaw torque
+				# and profile over those of the quad it is built on
+				for k in c.get_section_keys(sec):
+					if k == "yaw_torque" or k == "pids" or k in PID_KEYS or k in PROFILE_KEYS:
+						if not own_drones.has(sec):
+							own_drones[sec] = {}
+						own_drones[sec][k] = c.get_value(sec, k)
+	_say("airmode %s, idle %s percent, TPA %s from %s, I-term relax %s at %s Hz, feedforward limit %s percent, rotor inertia %s, gyro noise %s deg/s, ground friction %s; PIDs: each drone's own (a section per drone), shown below as it is flown" % [
 		"on" if bool(cfg["airmode"]) else "off", str(cfg["idle_percent"]), str(cfg["tpa_rate"]), str(cfg["tpa_breakpoint"]),
 		str(cfg["iterm_relax"]), str(cfg["iterm_relax_cutoff"]), str(cfg["feedforward_max_rate_limit"]), str(cfg["rotor_inertia"]), str(cfg["gyro_noise"]),
-		str(cfg["ground_friction"]), _pid_text("5inch"), _pid_text("whoop")])
+		str(cfg["ground_friction"])])
+	if not own_drones.is_empty():
+		_say("sections for added drones: %s" % ", ".join(PackedStringArray(own_drones.keys())))
 	settings_gen += 1
 
 
@@ -133,14 +169,6 @@ func zm_apply_settings() -> void:
 	_read_settings()
 	_said.clear()
 	_write_status()
-
-
-func _pid_text(name: String) -> String:
-	var parts := PackedStringArray()
-	for ax in ["roll", "pitch", "yaw"]:
-		var a: Array = pids[name][ax]
-		parts.append("%d/%d/%d/%d" % [int(a[0]), int(a[1]), int(a[2]), int(a[3])])
-	return ", ".join(parts)
 
 
 # After every mod's zm_init and before the game loads its first scene
@@ -177,7 +205,24 @@ func params_for(vid: String, mass: float) -> Dictionary:
 	var k: Vector2 = GYRATION["ducted" if bool(d["ducted"]) else "open"]
 	var roll := mass * pow(k.x * wb, 2.0)
 	var yaw := mass * pow(k.y * wb, 2.0)
-	var prof: Dictionary = pids.get(str(d["pids"]), pids["5inch"])
+	# the drone's own PIDs over its profile's; Betaflight's per-profile
+	# settings the drone's own, else its profile's, else the mod's
+	var base_prof: Dictionary = pids.get(str(d.get("pids", "5inch")), pids["5inch"])
+	var prof := {}
+	for axn in ["roll", "pitch", "yaw"]:
+		var a: Array = (base_prof[axn] as Array).duplicate()
+		var ti := 0
+		for term in ["p", "i", "d", "f"]:
+			if d.has(axn + "_" + term):
+				a[ti] = float(d[axn + "_" + term])
+			ti += 1
+		prof[axn] = a
+	var pc := cfg.duplicate()
+	for pk in profile_cfg.get(str(d.get("pids", "")), {}):
+		pc[pk] = profile_cfg[str(d["pids"])][pk]
+	for pk in PROFILE_KEYS:
+		if d.has(pk):
+			pc[pk] = d[pk]
 	var ax := {}
 	for pair in [["x", "pitch"], ["y", "yaw"], ["z", "roll"]]:
 		var a: Array = prof[pair[1]]
@@ -189,7 +234,7 @@ func params_for(vid: String, mass: float) -> Dictionary:
 	var prop := clampf(float(d["prop_mm"]), 10.0, 400.0) / 31.0
 	var rotor_j := 3.5e-8 * pow(prop, 3.56) * maxf(float(cfg["rotor_inertia"]), 0.0)
 	var omega_max := 52000.0 * pow(prop, -0.33) * TAU / 60.0
-	var rx := str(cfg["iterm_relax"]).to_upper()
+	var rx := str(pc["iterm_relax"]).to_upper()
 	# quad X, forward is -z: front-left, front-right, rear-left, rear-right;
 	# front-left and rear-right spin anticlockwise seen from above
 	var pos := [Vector3(-s, 0, -s), Vector3(s, 0, -s), Vector3(-s, 0, s), Vector3(s, 0, s)]
@@ -200,7 +245,7 @@ func params_for(vid: String, mass: float) -> Dictionary:
 		# pitch (x) from the front motors, roll (z) from the right ones, yaw
 		# (y) from those spinning clockwise
 		mix.append(Vector3(signf(-q.z), -float(spin[i]), signf(q.x)))
-	var bp := clampf((float(cfg["tpa_breakpoint"]) - 1000.0) / 1000.0, 0.0, 0.99)
+	var bp := clampf((float(pc["tpa_breakpoint"]) - 1000.0) / 1000.0, 0.0, 0.99)
 	var p := {
 		"name": d["name"], "pos": pos, "spin": spin, "mix": mix,
 		"inertia": Vector3(roll, yaw, roll),
@@ -209,36 +254,46 @@ func params_for(vid: String, mass: float) -> Dictionary:
 		"idle": clampf(float(cfg["idle_percent"]) / 100.0, 0.0, 0.3),
 		"airmode": bool(cfg["airmode"]),
 		"airmode_start": clampf(float(cfg["airmode_start_throttle_percent"]) / 100.0, 0.0, 1.0),
-		"tpa_rate": clampf(float(cfg["tpa_rate"]) / 100.0, 0.0, 1.0), "tpa_breakpoint": bp,
-		"dterm_hz": float(cfg["dterm_lowpass_hz"]), "ff_hz": float(cfg["feedforward_smoothing_hz"]),
-		"ff_limit": clampf(float(cfg["feedforward_max_rate_limit"]) / 100.0, 0.0, 1.0),
+		"tpa_rate": clampf(float(pc["tpa_rate"]) / 100.0, 0.0, 1.0), "tpa_breakpoint": bp,
+		"dterm_hz": float(pc["dterm_lowpass_hz"]), "ff_hz": float(pc["feedforward_smoothing_hz"]),
+		"ff_limit": clampf(float(pc["feedforward_max_rate_limit"]) / 100.0, 0.0, 1.0),
 		"relax": Vector3(1.0 if rx.begins_with("RP") else 0.0, 1.0 if rx == "RPY" else 0.0, 1.0 if rx.begins_with("RP") else 0.0),
-		"relax_hz": clampf(float(cfg["iterm_relax_cutoff"]), 1.0, 100.0),
+		"relax_hz": clampf(float(pc["iterm_relax_cutoff"]), 1.0, 100.0),
 		"rotor_j": rotor_j, "omega_max": omega_max,
 		"gyro_noise": clampf(float(cfg["gyro_noise"]), 0.0, 20.0),
-		"iterm_limit": float(cfg["iterm_limit"]),
-		"iterm_windup": clampf(float(cfg["iterm_windup"]) / 100.0, 0.0, 1.0),
+		"iterm_limit": float(pc["iterm_limit"]),
+		"iterm_windup": clampf(float(pc["iterm_windup"]) / 100.0, 0.0, 1.0),
 		"ground_friction": clampf(float(cfg["ground_friction"]), 0.0, 2.0),
 	}
 	var key := "%s %.4f" % [vid, mass]
 	if not _said.has(key):
 		_said[key] = true
-		_say("flying %s (%d g): motors %d mm apart, %d ms; inertia %d g cm2 roll and pitch, %d yaw; rotors %s g cm2 each, up to %d rpm; %s PIDs" % [
+		var pt := PackedStringArray()
+		for axn in ["roll", "pitch", "yaw"]:
+			var a: Array = prof[axn]
+			pt.append("%d/%d/%d/%d" % [int(a[0]), int(a[1]), int(a[2]), int(a[3])])
+		_say("flying %s (%d g): motors %d mm apart, %d ms; inertia %d g cm2 roll and pitch, %d yaw; rotors %s g cm2 each, up to %d rpm; PIDs %s, TPA %s from %s" % [
 			d["name"], int(round(mass * 1000.0)), int(round(wb * 1000.0)), int(round(tau * 1000.0)),
 			int(round(roll * 1e7)), int(round(yaw * 1e7)), str(snappedf(rotor_j * 1e7, 0.01)),
-			int(round(omega_max * 60.0 / TAU / 100.0)) * 100, str(d["pids"])])
+			int(round(omega_max * 60.0 / TAU / 100.0)) * 100, ", ".join(pt), str(pc["tpa_rate"]), str(pc["tpa_breakpoint"])])
 		_write_status()
 	return p
 
 
 # the drones mod's figures for the drone (an added drone's from its
 # block, the rest from the drone it is built on), with its yaw torque and
-# PID profile from here (those of the drone it is, or is built on)
+# PID profile from here (those of the drone it is, or is built on, under an
+# added drone's own section if it has one)
 func _drone(vid: String) -> Dictionary:
 	var d: Dictionary = _specs.figures(vid, _core)
 	var own: Dictionary = drones.get(str(d.get("base", "other")), drones["other"])
+	if drones.has(vid):
+		own = drones[vid]
 	for k in own:
 		d[k] = own[k]
+	# an added drone's own section, over the quad it is built on
+	for k in own_drones.get(vid, {}):
+		d[k] = own_drones[vid][k]
 	return d
 
 

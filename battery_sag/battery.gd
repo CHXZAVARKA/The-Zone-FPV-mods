@@ -55,6 +55,8 @@ const DEFAULTS := {
 const PACKS := {
 	"65mm_freestyle": {"name": "65mm Whoop", "capacity_mah": 300, "cells": 1, "lihv": true,
 		"full_throttle_amps": 15.0, "idle_amps": 0.9, "resistance_mohm": 37.0},
+	"75mm_freestyle": {"name": "75mm Whoop", "capacity_mah": 450, "cells": 1, "lihv": true,
+		"full_throttle_amps": 20.0, "idle_amps": 0.9, "resistance_mohm": 28.0},
 	"85mm_freestyle": {"name": "85mm Whoop", "capacity_mah": 450, "cells": 2, "lihv": true,
 		"full_throttle_amps": 30.0, "idle_amps": 0.45, "resistance_mohm": 14.0},
 	"2.5in_freestyle": {"name": "2.5\" Freestyle", "capacity_mah": 550, "cells": 2, "lihv": true,
@@ -83,6 +85,13 @@ const LIHV := [[-0.10, 2.70], [0.00, 3.270], [0.05, 3.612], [0.10, 3.695], [0.15
 	[0.50, 3.893], [0.55, 3.911], [0.60, 3.940], [0.65, 3.989], [0.70, 4.038], [0.75, 4.077],
 	[0.80, 4.127], [0.85, 4.198], [0.90, 4.238], [0.95, 4.289], [1.00, 4.350]]
 
+# What a pack can also set (a section of settings.cfg, or an added drone's
+# block): how much its sag builds the longer it is pushed, times POL_FAST
+# and POL_SLOW (most of a whoop's sag is its lead, plug and board, which do
+# not build); and the voltage a cell under full throttle its quad's thrust
+# is for (0 = [battery] thrust_at_cell_volts) - a maker's figure measured
+# with the pack is at that pack's sag
+const PACK_EXTRAS := {"polarisation": 1.0, "thrust_at_cell_volts": 0.0}
 # Polarisation: resistance (times the ohmic one) and time constant, fast and slow
 const POL_FAST := 0.4
 const TAU_FAST := 1.5
@@ -128,6 +137,8 @@ func setup(dir: String) -> String:
 	packs = {}
 	for id in PACKS:
 		packs[id] = (PACKS[id] as Dictionary).duplicate()
+		for k in PACK_EXTRAS:
+			packs[id][k] = PACK_EXTRAS[k]
 	var c := ConfigFile.new()
 	if c.load(dir + "settings.cfg") == OK:
 		if c.has_section("battery"):
@@ -290,8 +301,9 @@ func step(amps: float, dt: float) -> void:
 	mah_used += amps * dt / 3.6
 	var s := soc()
 	var r := resistance(s)
-	_vf += (amps * r * POL_FAST - _vf) * (1.0 - exp(-dt / TAU_FAST))
-	_vs += (amps * r * POL_SLOW - _vs) * (1.0 - exp(-dt / TAU_SLOW))
+	var pol := clampf(float(pack.get("polarisation", 1.0)), 0.0, 5.0)
+	_vf += (amps * r * POL_FAST * pol - _vf) * (1.0 - exp(-dt / TAU_FAST))
+	_vs += (amps * r * POL_SLOW * pol - _vs) * (1.0 - exp(-dt / TAU_SLOW))
 	cell_voltage = maxf(ocv(s) - amps * r - _vf - _vs, 0.0)
 
 
@@ -310,6 +322,8 @@ func amps_for(share: float, armed: bool) -> float:
 func motor_scale(throttle: float) -> float:
 	var fresh := ocv(1.0) - current * _r0
 	var ref := float(cfg["thrust_at_cell_volts"])
+	if float(pack.get("thrust_at_cell_volts", 0.0)) > 0.0:
+		ref = float(pack["thrust_at_cell_volts"])
 	if ref <= 0.0:
 		ref = fresh
 	ref = maxf(ref, 0.5)
@@ -403,7 +417,7 @@ func _check_respawn(p: Node, armed: bool) -> void:
 	var sw = cs.get("_respawn_switch_cycled") if cs != null else null
 	var radio: bool = sw is bool and _sw_last is bool and _sw_last and not sw
 	_sw_last = sw
-	var jumped := _have_pos and pos.distance_to(_last_pos) > 4.0
+	var jumped := _have_pos and pos.distance_to(_last_pos) > 4.0 and not _teleported(p)
 	var arrived := _have_pos and at_spawn and not _at_spawn and not moved
 	var respawned := _r_key or radio or jumped or arrived
 	_r_key = false
@@ -446,3 +460,17 @@ func _release() -> void:
 
 func _exit_tree() -> void:
 	_release()
+
+
+# The map_extras mod moving the quad through a map's teleport: not a respawn,
+# and not flown either. It counts them on the quad ("zm_teleports").
+var _tp_key := []
+
+
+func _teleported(p: Object) -> bool:
+	if p == null:
+		return false
+	var key := [p.get_instance_id(), int(p.get_meta("zm_teleports", 0))]
+	var moved: bool = not _tp_key.is_empty() and key[0] == _tp_key[0] and key[1] != _tp_key[1]
+	_tp_key = key
+	return moved

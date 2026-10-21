@@ -1,4 +1,4 @@
-flight_controller 1.3
+flight_controller 1.5
 =======================
 
 A flight controller for the quad: Betaflight's rate PIDs, mixer and airmode,
@@ -138,12 +138,29 @@ SETTINGS
     - rotor_inertia: the motors' kick on yaw, 1 = as worked out from the
       prop's size, 0 = none (yaw from the props' drag alone, as in 1.0)
     - braking=false lets the motors coast down, 4 times more slowly
-    - [pids_5inch] and [pids_whoop]: P, I, D and F for roll, pitch and yaw,
-      in Betaflight's units - paste a tune in
-    - a section for each of the game's quads: yaw_torque (a prop's drag
-      torque over its thrust, in metres) and which PID profile it flies.
-      Its prop size, ducts, motor to motor distance and motor time constant
-      are in drones/settings.cfg, shared with the other physics mods
+    - a section for each drone: the game's quads, any other quad, and the
+      drones the drones mod adds, by their id. Each has its own tune - P, I,
+      D and F for roll, pitch and yaw in Betaflight's units (roll_p ...
+      yaw_f; paste a tune in from its CLI) and TPA - and yaw_torque (a
+      prop's drag torque over its thrust, in metres). Its prop size, ducts,
+      motor to motor distance and motor time constant are in
+      drones/settings.cfg, shared with the other physics mods. With
+      mod_settings the page shows one drone at a time, starting on the one
+      you fly. A section can also set Betaflight's other per-profile
+      settings for that drone: dterm_lowpass_hz, feedforward_smoothing_hz,
+      feedforward_max_rate_limit, iterm_relax, iterm_relax_cutoff,
+      iterm_limit and iterm_windup
+    - the tunes as shipped: Betaflight 4.5's defaults for the 5", racer,
+      beginner, 3.5" and 2.5"; BETAFPV's Air65 II freestyle tune for the
+      65mm and 85mm whoops and any other quad; BETAFPV's stock Air75 tune
+      for the 75mm; a real Meteor75 Pro II's (Betaflight 2025.12, no
+      feedforward, TPA 70 from 1180) and DeepSpace's stock Seeker 3 tune
+      for the drones mod's two
+    - an added drone with no section of its own flies the one of the quad
+      it is built on
+    - a tune shared by several drones: pids="<name>" in their sections and
+      a [pids_<name>] section with the terms (and per-profile settings);
+      a drone's own terms still win
 
   The game's Physics menu still sets each quad's weight, thrust and drag.
 

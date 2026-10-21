@@ -1,4 +1,4 @@
-drones 1.1
+drones 1.2
 =============
 
 Every drone in one place. Each drone's props, frame and motors - set once

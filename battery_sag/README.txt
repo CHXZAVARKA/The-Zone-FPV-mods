@@ -1,4 +1,4 @@
-battery_sag 1.3
+battery_sag 1.4
 =====================
 
 A flight pack for The Zone FPV that drains, sags under load and changes how
@@ -42,6 +42,7 @@ SETTINGS
 
     quad            pack                like
     65mm Whoop      1S 300 mAh LiHV     Air65, Meteor65, Mobula6
+    75mm Whoop      1S 450 mAh LiHV     Air75
     85mm Whoop      2S 450 mAh LiHV     Mobula8, Meteor85
     2.5" Freestyle  2S 550 mAh LiHV     ultralight 2.5" toothpicks
     3.5" Freestyle  4S 850 mAh LiPo     Smart35 and other 3.5" cinewhoops
@@ -52,9 +53,9 @@ SETTINGS
 
   A drone added by the drones mod flies on the pack its block sets
   (battery_mah, battery_cells, battery_lihv, battery_full_throttle_amps,
-  battery_idle_amps, battery_resistance_mohm), with its base quad's pack
-  for anything the block leaves out; the drones mod's Meteor75 Pro II has a
-  1S 580 mAh LiHV.
+  battery_idle_amps, battery_resistance_mohm, battery_polarisation,
+  battery_thrust_volts), with its base quad's pack for anything the block
+  leaves out; the drones mod's Meteor75 Pro II has a 1S 580 mAh LiHV.
 
   Roughly: 2-3.5 minutes flown hard, 4-6 minutes cruising, landing at
   3.2 V a cell on 1S and 3.5 V on the rest. settings.cfg lists each quad's
@@ -64,6 +65,14 @@ SETTINGS
   lihv describe it, resistance_mohm how much it sags; full_throttle_amps and
   idle_amps describe the quad's draw. The quad's weight is not part of it -
   the game's own weight and thrust settings still change how it flies.
+
+  A pack can also set polarisation - how much more it sags the longer you
+  push, times the usual (1); lower = the sag mostly at once, as on a whoop,
+  whose thin leads, plug and board do much of it - and its own
+  thrust_at_cell_volts, for a quad whose thrust figure was measured with
+  its pack: the Meteor75 Pro II's is at 3.2 V, where a full punch pulls a
+  fresh LAVA II 580 (Oscar Liang measured 3.1-3.2 V), so its OSD shows the
+  sag a real one does while it flies as hard as before.
 
   In [battery]: thrust_at_cell_volts is the voltage a cell under load that
   the game's thrust is for (3.6); 0 has a fresh pack fly exactly as the game

@@ -1,11 +1,13 @@
-rotor_drag 1.1
+rotor_drag 1.2
 ===============
 
-Adds the drag spinning props put on a quad moving across them, which The
-Zone FPV leaves out, and takes off a drag it should not have: the physics
-engine's own damping. Let go at course speed, a whoop now stops in about
-two thirds of the distance it slid before; top speeds hardly change, and
-falls and long coasts carry the weight they should.
+Spinning props in moving air. Adds the drag they put on a quad moving
+across them, which The Zone FPV leaves out, and takes off a drag it should
+not have: the physics engine's own damping. Let go at course speed, a
+whoop now stops in about two thirds of the distance it slid before, and
+falls and long coasts carry the weight they should. And in a climb the
+props keep their thrust as real ones do, so a punch-out keeps pulling
+instead of fading after the first quarter of a second.
 
 
 WHAT IT CHANGES
@@ -45,12 +47,65 @@ WHAT IT CHANGES
 
   Tilted forward and holding height, a quad settles at a lower speed for
   the same tilt - the 65mm Whoop at 45 degrees cruises at 28 km/h instead
-  of 31 - so you tilt a little further for the same speed. Flat out, at the
-  best tilt, top speeds change by a few percent. Flying forward it also
-  needs a touch less throttle to hold height: tilted, the props' drag lies
-  in their plane, so it points back and slightly up. Straight up and down is
-  not changed. Wind pushes a whoop around more, since its props drag on the
-  wind as well.
+  of 31 - so you tilt a little further for the same speed (with the climb
+  model below, 30). Flying forward it also needs a touch less throttle to
+  hold height: tilted, the props' drag lies in their plane, so it points
+  back and slightly up. Wind pushes a whoop around more, since its props
+  drag on the wind as well.
+
+
+CLIMBING
+  Climbing, air comes through the props along their axis, faster the faster
+  the quad climbs - and flying fast, tilted over, part of the air goes
+  through them that way too. The game takes thrust off for that in a
+  straight line from the first metre a second: at a third of the drone's
+  top_speed a sixth of it is gone. And it counts the spinning props as more
+  body drag along their axis as well (its corner drag: a full-throttle
+  climb meets about 1.6 times the drag of a hover), on top of the thrust
+  they have already lost. So a punch-out pulls hard for a quarter of a
+  second and then fades.
+
+  A real prop barely loses thrust at first - standing still its blades are
+  partly stalled, and as the air comes they unload and the motor speeds up
+  - and loses it faster nearer its pitch speed. With climb=true (the
+  default) the thrust falls as 1 - 0.5 x (airspeed / top_speed)^1.5: still
+  half at the drone's top_speed, as the game has it, so each drone's
+  top_speed keeps its meaning, but with 90% left at a third of it rather
+  than 83%, and 82% at half rather than 75%. That curve is fitted to a
+  Gemfan 1811's bench test (45 mm, 1.8" pitch, on a 1102 motor - a Meteor75
+  Pro II's props) with a prop's thrust against airspeed and the motor
+  speeding up as the prop unloads: within 3% of it from 10 to 25 m/s. The
+  props' extra drag along the axis is taken off while the air comes through
+  them from above, since the thrust loss already counts what they cost a
+  climb. Falling through them is left as the game has it (dirty_air works
+  on that).
+
+  Full throttle from a hover, after 1 second (the game's own quad script,
+  measured in Godot; the 5" in the same test on the game's flight model):
+
+    quad             height gained         speed reached
+                     game   climb model    game   climb model
+    65mm Whoop       8.5 m  9.7 m          43     52 km/h
+    5" Freestyle     18.5 m 21.7 m         106    131 km/h
+
+  Flat out at the best tilt and straight up, worked out with the game's
+  flight model and rotor drag (km/h):
+
+    quad             flat out               straight up
+                     game   climb model     game   climb model
+    65mm Whoop       50     60              46     58
+    75mm Whoop       60     70              58     69
+    85mm Whoop       67     80              62     78
+    2.5" Freestyle   82     101             78     103
+    3.5" Freestyle   107    125             104    126
+    5" Freestyle     119    143             116    145
+    5" Racer         136    168             134    171
+    Beginner 5"      80     94              75     92
+
+  A drone added by the drones mod has its own top_speed in its block: the
+  airspeed through the props at which they have lost half their push. The
+  Meteor75 Pro II's is 100 km/h, from its props, which flies it at about
+  85 km/h flat out.
 
 
 HOW IT WORKS OUT THE FORCE
@@ -78,8 +133,11 @@ SETTINGS
   one, try 1.3 or 1.5; if it feels heavy and stops short, 0.7.
 
   engine_damping is the engine's damping on the quad you fly: 0 = none (the
-  default), 0.1 = as the game has it. strength=0 with engine_damping=0.1 is
-  the game exactly as it is.
+  default), 0.1 = as the game has it.
+
+  climb=true (the default) is the climb model above; false = the game's own
+  straight-line thrust loss and climb drag. strength=0, engine_damping=0.1
+  and climb=false is the game exactly as it is.
 
   Each drone's prop size (prop_mm) and whether it has ducts are in
   drones/settings.cfg, which comes with this mod and is shared with
@@ -91,9 +149,10 @@ SETTINGS
 MULTIPLAYER AND RACES
   Only the quad you fly is changed, on your computer; other players see
   where you fly as ever. Like any change to the flight model it changes how
-  fast you get round a race track: the rotor drag makes a quad slower;
-  without the engine's damping, climbs, falls and long coasts carry a
-  little further.
+  fast you get round a race track: the rotor drag makes a quad slower in
+  the turns; the climb model makes it faster out of them and on the
+  straights; without the engine's damping, climbs, falls and long coasts
+  carry a little further.
 
 
 INSTALL
@@ -115,6 +174,8 @@ UNINSTALL
 
 
 TROUBLESHOOTING
-  rotor_drag/status.txt is rewritten at every launch: the strength, and a line
-  each time you fly a different drone with its props and rotor drag.
+  rotor_drag/status.txt is rewritten at every launch: the strength, the climb
+  model, and a line each time you fly a different drone with its props and
+  rotor drag. If a game update changes the game's table of thrust against
+  airspeed, the climb model leaves it alone and status.txt says so.
   zonemods/status.txt lists which mods loaded.

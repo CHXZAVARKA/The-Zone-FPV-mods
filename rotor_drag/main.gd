@@ -8,7 +8,7 @@ extends Node
 ##
 ## Uninstall: delete the rotor_drag folder.
 
-const VERSION := "1.1"
+const VERSION := "1.2"
 const DIR := "res://rotor_drag/"
 
 var _rotor: Node = null

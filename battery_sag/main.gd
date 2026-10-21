@@ -8,7 +8,7 @@ extends Node
 ##
 ## Uninstall: delete the battery_sag folder.
 
-const VERSION := "1.3"
+const VERSION := "1.4"
 const DIR := "res://battery_sag/"
 
 var _battery: Node = null
