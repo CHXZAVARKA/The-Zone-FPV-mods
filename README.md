@@ -50,7 +50,8 @@ lets you edit settings in-game (adds a Mods button to pause menu, or overlay wit
 
 ## mode_3d
 
-3D mode: motors that turn both ways, as on a quad flown with Betaflight's 3D feature and bidirectional ESCs. Below mid throttle the motors stop, start again backwards and push the other way, so the quad can hang upside down, fly inverted and flip back over without turtle mode. Works with gamepads (half-range throttle is detected). Off until you turn it on.
+3D mode: motors that turn both ways, as on a quad flown with Betaflight's 3D feature and bidirectional ESCs. Pull the throttle below the middle and the motors stop, start again backwards and push the other way - so the quad
+can hang upside down, fly inverted and flip back over without turtle mode. Off until you turn it on.
 
 ## pilot_audio
 
