@@ -7,11 +7,6 @@ override.cfg, the zonemods folder, and the folder for the mods you want should a
 
 Each mod has its own settings.cfg where they can be disabled individually, as well as many settings you can tweak.
 
-## analog400mw
-simulates 400mw analog signal quality
-
-![400mw](400mw.webp)
-
 ## battery_sag
 
 LATEST: nils vo confirmed the sim's normal drone thrust assumes a ~3.6v sagged battery. This mod has been updated to account for that, so a fresh pack will initially give you more power than you're used to, before sagging down to normal levels, then dropping below.
@@ -24,7 +19,7 @@ The default method to equip a fresh battery is to DISARM and RESET. This will al
 
 ## Dirty Air 
 
-Cause you to leave air behind, lasting a second or two and spreading. Floor gives more thrust under the props and ceiling pulls the props up.
+Adds prop wash when you drop through your own air, a cushion near the floor and a pull toward ceilings. Other pilots' dirty air and gusty wind are optional extras.
 
 ![Dirty Air](dirtyair1.png)
 
@@ -67,9 +62,13 @@ Props can take damage, causing gyro noise and instability. Props can also break.
 
 ## Rotor Drag
 
-simulates rotor drag. Configurable options per drone. Force grows with the speed itself. Removes the physics engine's hidden damping
+Adds the drag real props make so quads stop when you let off, removes a fake 10%-a-second brake the engine adds, and keeps punch-outs pulling instead of fading after a quarter of a second.
 
 ![Rotor Drag](rotordrag1.png)
+
+## signal_sim
+
+Replaces the old analog400mw mod, now that the game has proper whoop-style shaders, this mod lets you control the minimum signal quality and effect intensity of the signal simulation, so you can have degradation without full picture loss, and lets you add additional effects to taste.
 
 ## throttle fix
 Throttle Fix addresses the issue with the game initializing the throttle in the middle position until you move your throttle some amount.
