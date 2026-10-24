@@ -1,6 +1,6 @@
 extends Node
 ## Extend this registry with one small feature script and one config key.
-const FEATURES={"tutorial_progress":preload("tutorial_progress.gd")}
+const FEATURES={"tutorial_progress":preload("tutorial_progress.gd"),"esc_navigation":preload("esc_navigation.gd")}
 var _dir=""
 var _core: Node
 var _features={}

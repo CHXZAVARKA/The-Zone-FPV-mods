@@ -16,7 +16,7 @@ func _initialize() -> void:
  assert(store.read_checkpoint(path)==store.completed_only(merged))
  DirAccess.remove_absolute(path)
  DirAccess.remove_absolute(path.get_base_dir())
- for name in ["main","tutorial_progress"]:
+ for name in ["main","tutorial_progress","esc_navigation"]:
   var script=load(root.path_join("zone_fixes/"+name+".gd"))
   assert(script!=null and script.can_instantiate())
  print("PASS progress: completed-only recovery, nonmutation, next lesson, verified replacement; fixes parse")
